@@ -119,6 +119,8 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 .qwrap { position: relative; }
 .qink { position: absolute; inset: 0; touch-action: none; cursor: crosshair; z-index: 2; }
 .qtext { font-size: 17px; margin-bottom: 12px; }
+.qfig { margin: 10px auto 4px; text-align: center; }
+.qfig svg { max-width: min(100%, 460px); height: auto; background: #fff; }
 .qtext.big { font-size: 26px; text-align: center; padding: 12px 0; }
 .ansrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; flex-direction: column; align-items: stretch; }
 .ans-input {
