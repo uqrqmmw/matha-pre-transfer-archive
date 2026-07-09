@@ -220,6 +220,25 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 #syncpill.off { color: var(--dim); border-color: var(--dim); }
 @media (max-width: 600px) { #syncpill { top: auto; bottom: 10px; right: 10px; } }
 
+/* 📱 手機專區 */
+.pbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0 4px; }
+.btn.pbtn { font-size: 18px; padding: 16px 8px; margin: 0; font-variant-numeric: tabular-nums; }
+.btn.pbtn.good { border-color: var(--ok); color: var(--ok); font-weight: 700; background: rgba(21, 128, 61, 0.06); }
+.btn.pbtn.badpick { border-color: var(--bad); color: var(--bad); background: rgba(220, 38, 38, 0.06); }
+.flashcard { min-height: 42vh; display: flex; flex-direction: column; justify-content: center; text-align: center; cursor: pointer; }
+.flash-front { font-size: 22px; font-weight: 700; margin: 8px 0; }
+.flash-backtxt { font-size: 19px; color: var(--accent); font-weight: 700; margin-top: 12px; white-space: pre-wrap; }
+.flash-extra { text-align: left; margin-top: 10px; max-height: 26vh; overflow-y: auto; }
+.flash-btns { display: flex; gap: 10px; margin: 10px 0; }
+.flash-btns .btn { flex: 1; margin: 0; }
+
+/* 📈 每日投入 */
+.today-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: space-between; }
+.goalbar { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; margin-top: 8px; }
+.goalbar > div { height: 100%; background: #0d9488; border-radius: 4px; transition: width 0.3s; }
+.chartwrap { overflow-x: auto; margin-top: 10px; }
+.chartwrap svg { min-width: 520px; }
+
 /* 🧑‍🏫 老師方法庫（概念洞 UI） */
 .mlib { max-height: 55vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; background: #fff; }
 .mlib details { margin: 6px 0; border-bottom: 1px dashed var(--border); padding-bottom: 6px; }

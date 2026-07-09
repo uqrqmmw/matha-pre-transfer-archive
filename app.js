@@ -734,9 +734,188 @@ function dueWrong() {
   return Object.keys(S.wrong).filter((id) => S.wrong[id].due <= t);
 }
 
+/* ═══════════ ▶ 今日菜單一鍵啟動 ═══════════
+   自動排程：速度特訓（挑最該練的）→ 清到期錯題 → 主題刷題 8 題（挑最弱單元），
+   每段完成自動打勾，不用自己對照清單、選單元、回頭打勾。 */
+let dailyFlow = null;
+function dailyPick() {
+  // 挑最該練的特訓：沒練過 > 上次未達標 > 達標最久沒碰的
+  const keys = Object.keys(DRILLS);
+  const rank = (k) => {
+    const h = S.drills[k] || [];
+    const last = h[h.length - 1];
+    if (!last) return [0, ''];
+    const passed = last.med / 1000 <= DRILLS[k].target && last.acc === 100;
+    return [passed ? 2 : 1, last.d];
+  };
+  keys.sort((a, b) => {
+    const [pa, da] = rank(a), [pb, db] = rank(b);
+    return pa - pb || (da < db ? -1 : da > db ? 1 : 0);
+  });
+  return keys[0];
+}
+function startPracAuto() {
+  // 自動挑最弱單元（答對率最低/耗時比最高），沒數據就全範圍
+  const byTopic = {};
+  for (const a of S.attempts) {
+    const q = bankById(a.qid); if (!q) continue;
+    const t = (byTopic[q.topic] = byTopic[q.topic] || { n: 0, ok: 0, ms: 0, target: 0 });
+    t.n++; t.ok += a.ok ? 1 : 0; t.ms += a.ms; t.target += qTarget(q);
+  }
+  const worst = Object.keys(byTopic)
+    .map((k) => ({ k, acc: byTopic[k].ok / byTopic[k].n, speed: byTopic[k].ms / byTopic[k].target }))
+    .sort((a, b) => (a.acc - b.acc) || (b.speed - a.speed))
+    .slice(0, 3).map((t) => t.k);
+  let pool = worst.length ? BANK.filter((q) => worst.includes(q.topic)) : BANK.slice();
+  if (pool.length < 8) pool = BANK.slice();
+  pool = shuffle(pool).sort((a, b) => attemptsOf(a.id).length - attemptsOf(b.id).length);
+  prac = { queue: pool.slice(0, 8), i: 0, results: [], mode: 'practice' };
+  sessionActive = true;
+  sessionMode = 'prac';
+  snapSession();
+  pracNext();
+}
+function startDaily() {
+  dailyFlow = { stage: 0 };
+  dailyNext();
+}
+function dailyNext() {
+  if (!dailyFlow) return;
+  const t = today();
+  S.daily[t] = S.daily[t] || {};
+  const st = dailyFlow.stage;
+  if (st === 0) { dailyFlow.stage = 1; startDrill(dailyPick()); return; }
+  if (st === 1) {
+    S.daily[t].drill = true; save();
+    const due = dueWrong();
+    if (due.length) { dailyFlow.stage = 2; startReview(due); return; }
+    S.daily[t].wrongq = true; save();
+    dailyFlow.stage = 3; startPracAuto(); return;
+  }
+  if (st === 2) { S.daily[t].wrongq = true; save(); dailyFlow.stage = 3; startPracAuto(); return; }
+  if (st === 3) {
+    S.daily[t].prac = true; S.daily[t].log = true; save();
+    dailyFlow = null;
+    nav('stats');
+  }
+}
+function dailyBanner(stage) {
+  if (!dailyFlow || dailyFlow.stage !== stage) return '';
+  if (stage === 3) return `<div class="card good"><b>🎉 今日菜單全部完成！</b>四項任務已自動打勾。
+    <div class="actr"><button class="btn primary" onclick="dailyNext()">看今天的數據 →</button></div></div>`;
+  const due = dueWrong().length;
+  const next = stage === 1
+    ? (due ? `清到期錯題（${due} 題）` : '主題刷題 8 題（自動挑最弱單元）')
+    : '主題刷題 8 題（自動挑最弱單元）';
+  return `<div class="card good"><b>▶ 今日菜單進度 ${stage}/3 ✅</b>
+    <div class="actr"><button class="btn primary" onclick="dailyNext()">下一項：${next}</button></div></div>`;
+}
+
+/* ═══════════ 📈 每日投入統計（鼓勵機制） ═══════════ */
+function dayAgg() {
+  const days = {};
+  const add = (d, n, ok, ms) => {
+    if (!d) return;
+    const x = (days[d] = days[d] || { n: 0, ok: 0, ms: 0 });
+    x.n += n; x.ok += ok; x.ms += ms;
+  };
+  for (const a of S.attempts) add(a.d, 1, a.ok ? 1 : 0, a.ms || 0);
+  for (const k of Object.keys(S.drills)) {
+    for (const h of S.drills[k]) add(h.d, 12, Math.round(12 * (h.acc || 0) / 100), (h.med || 0) * 12);
+  }
+  if (S.phone && S.phone.days) {
+    for (const d of Object.keys(S.phone.days)) { const p = S.phone.days[d]; add(d, p.n, p.ok, p.ms || 0); }
+  }
+  return days;
+}
+function streakOf(days) {
+  let s = 0, d = today();
+  if (!days[d] || !days[d].n) d = addDays(d, -1); // 今天還沒練不斷 streak，從昨天往回數
+  while (days[d] && days[d].n > 0) { s++; d = addDays(d, -1); }
+  return s;
+}
+function dailyChartSVG(days) {
+  const ds = [];
+  for (let i = 13; i >= 0; i--) ds.push(addDays(today(), -i));
+  const vals = ds.map((d) => (days[d] ? days[d].n : 0));
+  const accs = ds.map((d) => (days[d] && days[d].n ? days[d].ok / days[d].n : null));
+  const max = Math.max(10, ...vals);
+  const W = 700, top = 18, bh = 104, axY = top + bh, accY = 158, accH = 42, H = 216;
+  const bw = 34, gap = 16;
+  const xc = (i) => i * (bw + gap) + gap / 2 + bw / 2;
+  const maxIdx = vals.indexOf(Math.max(...vals));
+  let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="近14天每日題數與答對率">`;
+  s += `<text x="0" y="11" font-size="11" fill="var(--dim)">每日題數</text>`;
+  s += `<line x1="0" y1="${axY}" x2="${W}" y2="${axY}" stroke="var(--border)"/>`;
+  ds.forEach((d, i) => {
+    const x = i * (bw + gap) + gap / 2;
+    if (vals[i] > 0) {
+      const h = Math.max(3, Math.round(bh * vals[i] / max));
+      s += `<rect x="${x}" y="${axY - h}" width="${bw}" height="${h}" rx="4" fill="#0d9488"><title>${d}：${vals[i]} 題、答對率 ${accs[i] != null ? (accs[i] * 100).toFixed(0) + '%' : '—'}</title></rect>`;
+      if (i === maxIdx || i === 13) s += `<text x="${xc(i)}" y="${axY - h - 5}" text-anchor="middle" font-size="12" fill="var(--dim)">${vals[i]}</text>`;
+    } else {
+      s += `<rect x="${x}" y="${axY - 2}" width="${bw}" height="2" rx="1" fill="var(--border)"/>`;
+    }
+    if (i % 2 === 1) s += `<text x="${xc(i)}" y="${axY + 15}" text-anchor="middle" font-size="11" fill="var(--dim)">${+d.slice(8)}日</text>`;
+  });
+  s += `<text x="0" y="${accY - 8}" font-size="11" fill="var(--dim)">答對率</text>`;
+  s += `<line x1="0" y1="${accY + accH}" x2="${W}" y2="${accY + accH}" stroke="var(--border)"/>`;
+  let prev = null;
+  ds.forEach((d, i) => {
+    if (accs[i] == null) { prev = null; return; }
+    const x = xc(i), y = accY + accH - accs[i] * accH;
+    if (prev) s += `<line x1="${prev[0]}" y1="${prev[1]}" x2="${x}" y2="${y}" stroke="#0d9488" stroke-width="2"/>`;
+    prev = [x, y];
+  });
+  ds.forEach((d, i) => {
+    if (accs[i] == null) return;
+    const x = xc(i), y = accY + accH - accs[i] * accH;
+    s += `<circle cx="${x}" cy="${y}" r="4" fill="#0d9488" stroke="#fff" stroke-width="2"><title>${d}：${(accs[i] * 100).toFixed(0)}%</title></circle>`;
+  });
+  s += '</svg>';
+  return s;
+}
+const DAY_GOAL = 30; // 每日題數目標（速訓12＋錯題＋刷題8＋手機零碎 ≈ 30）
+function dailyCard() {
+  const days = dayAgg();
+  if (!Object.keys(days).length) return '';
+  const t = today();
+  const tn = days[t] ? days[t].n : 0;
+  const streak = streakOf(days);
+  let w1 = 0, w0 = 0;
+  for (let i = 0; i < 7; i++) { const a = days[addDays(t, -i)]; if (a) w1 += a.n; }
+  for (let i = 7; i < 14; i++) { const a = days[addDays(t, -i)]; if (a) w0 += a.n; }
+  const totalMin = Math.round(Object.values(days).reduce((x, y) => x + y.ms, 0) / 60000);
+  const best = Object.entries(days).sort((a, b) => b[1].n - a[1].n)[0];
+  const cheers = [];
+  if (streak >= 3) cheers.push(`🔥 連續 <b>${streak}</b> 天有練——持續性比單日爆量更值錢`);
+  if (best && best[0] === t && tn > 0 && Object.keys(days).length > 1) cheers.push(`🏆 今天是至今題量最高的一天（${tn} 題）`);
+  if (w0 > 0 && w1 > w0) cheers.push(`📈 近 7 天 ${w1} 題，比前 7 天多 <b>${Math.round(100 * (w1 - w0) / w0)}%</b>`);
+  else if (w0 > 0 && w1 > 0 && w1 < w0) cheers.push(`近 7 天 ${w1} 題、前 7 天 ${w0} 題——再 <b>${w0 - w1 + 1}</b> 題就超車自己`);
+  return `<div class="card"><h2>📈 每日投入（近 14 天）</h2>
+    <div class="today-row"><span>🔥 連續 <b>${streak}</b> 天</span><span>今日 <b>${tn}</b> / ${DAY_GOAL} 題</span><span class="dim">累計投入約 ${totalMin} 分鐘</span></div>
+    <div class="goalbar"><div style="width:${Math.min(100, Math.round(100 * tn / DAY_GOAL))}%"></div></div>
+    <div class="chartwrap">${dailyChartSVG(days)}</div>
+    ${cheers.length ? `<div class="praise">${cheers.join('<br>')}</div>` : '<p class="dim">連續執行一兩週，這裡就會長出你的趨勢線——目標是讓長條圖不斷檔。</p>'}
+  </div>`;
+}
+function todayCard() {
+  const days = dayAgg();
+  const t = today();
+  const tn = days[t] ? days[t].n : 0;
+  const streak = streakOf(days);
+  return `<div class="card"><div class="today-row">
+      <span>🔥 連續 <b>${streak}</b> 天｜今日 <b>${tn}</b> / ${DAY_GOAL} 題</span>
+      <span class="shr"><button class="btn" onclick="nav('phone')">📱 手機專區</button>
+      <button class="btn primary" onclick="startDaily()">▶ 一鍵開始今日菜單</button></span>
+    </div>
+    <div class="goalbar"><div style="width:${Math.min(100, Math.round(100 * tn / DAY_GOAL))}%"></div></div></div>`;
+}
+
 /* ═══════════ 導覽 ═══════════ */
 const VIEWS = {
   home:  { label: '📋 診斷', fn: renderHome },
+  phone: { label: '📱 手機專區', fn: renderPhone },
   drill: { label: '⚡ 速度特訓', fn: renderDrillMenu },
   prac:  { label: '🎯 主題刷題', fn: renderPracConfig },
   mock:  { label: '⏱️ 模擬實戰', fn: renderMockIntro },
@@ -757,9 +936,12 @@ function rollbackSession() {
 function endSession() {
   sessionActive = false;
   sessionMode = null;
+  dailyFlow = null; // 中途離開＝取消今日菜單接力
   stopTicker();
   if (ink) inkStop();
   if (drill && drill.nextTimer) { clearTimeout(drill.nextTimer); drill.nextTimer = null; }
+  if (phone && phone.nextTimer) clearTimeout(phone.nextTimer);
+  phone = null; // 手機專區進行中的輪次作廢
   qsess = null; // 讓遲到的 AI 批改回呼認得出「這一題已經結束了」
   sessionChrome(false);
   modalClose();
@@ -803,8 +985,8 @@ function exitFlow(view) {
     ]);
     return;
   }
-  // drill：結果尚未寫入，離開即不保留
-  modal('<h2>要中途離開特訓嗎？</h2><p>這一輪還沒結束，離開不會留下本輪紀錄。</p>', [
+  // drill / 手機專區：整輪結果尚未寫入，離開即不保留本輪
+  modal('<h2>要中途離開嗎？</h2><p>這一輪還沒結束，離開不會保留本輪成績。</p>', [
     ['繼續', resume, 'primary'],
     ['離開', () => { endSession(); nav(goto); }],
   ]);
@@ -847,6 +1029,7 @@ function renderHome() {
     <h1>數A 13級分特訓系統</h1>
     <p>距離 116 學測（2027/1/22）還有 <b class="accent">${days} 天</b>｜目標：9 → 13 級分｜台大獸醫</p>
   </div>
+  ${todayCard()}
   ${status}
   ${teachProfileCard()}
   <div class="card">
@@ -1053,6 +1236,294 @@ const DRILLS = {
     } },
 };
 
+/* ═══════════ 📱 手機專區 ═══════════
+   零碎時間、單手、全按鈕作答（不手寫不打字）。內容＝學測數A該背/該心算的：
+   公式、定理、幾何原則、特殊值＋老師 42 堂課強調的口訣。紀錄存 S.phone → 雲端同步。 */
+const FLASH = [
+  // 數與式/多項式
+  { id: 'f1', unit: 'num', front: '算幾不等式', back: '(a+b)/2 ≥ √(ab)（a,b>0；等號成立 ⇔ a=b）' },
+  { id: 'f2', unit: 'num', front: '|x−a| < r 拆開來是？', back: 'a−r < x < a+r（絕對值＝到 a 的距離小於 r）' },
+  { id: 'f3', unit: 'num', front: '和/差的立方公式 a³±b³', back: 'a³±b³ = (a±b)(a²∓ab+b²)' },
+  { id: 'f4', unit: 'poly', front: '根與係數（ax²+bx+c=0）', back: '兩根和 = −b/a、兩根積 = c/a' },
+  { id: 'f5', unit: 'poly', front: '判別式判根', back: 'b²−4ac：>0 兩相異實根、=0 重根、<0 無實根' },
+  { id: 'f6', unit: 'poly', front: '拋物線 y=ax²+bx+c 的頂點 x 座標', back: 'x = −b/(2a)（最大/最小值發生處）' },
+  { id: 'f7', unit: 'poly', front: '餘式定理', back: 'f(x) 除以 (x−a) 的餘式 = f(a)' },
+  { id: 'f8', unit: 'poly', front: '因式定理', back: 'f(a) = 0 ⇔ (x−a) 是 f(x) 的因式' },
+  // 直線與圓
+  { id: 'f9', unit: 'line', front: '點 (x₀,y₀) 到直線 ax+by+c=0 的距離', back: '|ax₀+by₀+c| / √(a²+b²)' },
+  { id: 'f10', unit: 'line', front: '兩直線垂直的斜率條件', back: 'm₁·m₂ = −1（平行則 m₁ = m₂）' },
+  { id: 'f11', unit: 'line', front: '圓 x²+y²+dx+ey+f=0 的圓心', back: '(−d/2, −e/2)，半徑 = √(d²/4+e²/4−f)' },
+  { id: 'f12', unit: 'line', front: '直線與圓的位置關係怎麼判？', back: '比圓心到直線距離 d 與半徑 r：d<r 交兩點、d=r 相切、d>r 不相交' },
+  { id: 'f13', unit: 'line', front: '圓外一點的切線長', back: '√(d²−r²)（d=點到圓心距離）' },
+  { id: 'f14', unit: 'line', front: '三角形的外心／內心／重心是什麼線的交點？', back: '外心＝中垂線交點（到三頂點等距）；內心＝角平分線交點（到三邊等距）；重心＝中線交點（分中線 2:1）' },
+  // 指對數
+  { id: 'f15', unit: 'exp', front: '指數律三條', back: 'aᵐ·aⁿ = aᵐ⁺ⁿ；(aᵐ)ⁿ = aᵐⁿ；aᵐ/aⁿ = aᵐ⁻ⁿ' },
+  { id: 'f16', unit: 'exp', front: '對數律三條', back: 'log(ab)=log a+log b；log(a/b)=log a−log b；log aⁿ = n·log a' },
+  { id: 'f17', unit: 'exp', front: '換底公式', back: 'log_a b = log b / log a（任何新底都行）；log_a b · log_b a = 1' },
+  { id: 'f18', unit: 'exp', front: '正整數 N 的位數', back: '位數 = ⌊log₁₀N⌋ + 1' },
+  { id: 'f19', unit: 'exp', front: 'y=aˣ 與 y=log_a x 必過的點', back: 'aˣ 過 (0,1)；log_a x 過 (1,0)；兩圖形對 y=x 對稱' },
+  // 數列級數
+  { id: 'f20', unit: 'seq', front: '等差數列 aₙ 與前 n 項和', back: 'aₙ = a₁+(n−1)d；Sₙ = n(a₁+aₙ)/2' },
+  { id: 'f21', unit: 'seq', front: '等比數列 aₙ 與前 n 項和', back: 'aₙ = a₁·rⁿ⁻¹；Sₙ = a₁(1−rⁿ)/(1−r)（r≠1）' },
+  { id: 'f22', unit: 'seq', front: '1+2+…+n 與 1²+2²+…+n²', back: 'n(n+1)/2；n(n+1)(2n+1)/6' },
+  { id: 'f23', unit: 'seq', front: '無窮等比級數和（|r|<1）', back: 'a₁/(1−r)' },
+  // 排列組合
+  { id: 'f24', unit: 'comb', front: 'C(n,k) 與 P(n,k) 的公式', back: 'C(n,k)=n!/(k!(n−k)!)；P(n,k)=n!/(n−k)!；C(n,k)=C(n,n−k)' },
+  { id: 'f25', unit: 'comb', front: '環狀排列', back: 'n 人圍圓桌 = (n−1)!' },
+  { id: 'f26', unit: 'comb', front: '重複組合 H', back: 'H(n,k) = C(n+k−1, k)（n 類選 k 個可重複）' },
+  { id: 'f27', unit: 'comb', front: '二項式定理的一般項', back: '(x+y)ⁿ 的一般項 = C(n,k)·xⁿ⁻ᵏ·yᵏ' },
+  { id: 'f28', unit: 'comb', front: '取捨原理（兩集合）', back: '|A∪B| = |A|+|B|−|A∩B|' },
+  // 機率統計
+  { id: 'f29', unit: 'prob', front: '條件機率', back: 'P(A|B) = P(A∩B)/P(B)' },
+  { id: 'f30', unit: 'prob', front: '獨立事件的判定', back: 'A、B 獨立 ⇔ P(A∩B) = P(A)·P(B)' },
+  { id: 'f31', unit: 'prob', front: '期望值', back: 'E = Σ（值 × 機率）' },
+  { id: 'f32', unit: 'data', front: '資料全部做 ax+b 變換後，平均與標準差？', back: '平均 → aμ+b；標準差 → |a|σ（平移不改變標準差）' },
+  { id: 'f33', unit: 'data', front: '相關係數 r 的範圍與迴歸直線必過點', back: '−1 ≤ r ≤ 1；迴歸直線必過 (x̄, ȳ)' },
+  // 三角
+  { id: 'f34', unit: 'trig1', front: 'sin/cos/tan 30°、45°、60°', back: 'sin: 1/2、√2/2、√3/2｜cos: √3/2、√2/2、1/2｜tan: √3/3、1、√3' },
+  { id: 'f35', unit: 'trig1', front: '平方關係與商數關係', back: 'sin²θ+cos²θ=1；tanθ = sinθ/cosθ' },
+  { id: 'f36', unit: 'trig1', front: '正弦定理', back: 'a/sinA = b/sinB = c/sinC = 2R（R=外接圓半徑）' },
+  { id: 'f37', unit: 'trig1', front: '餘弦定理', back: 'c² = a²+b²−2ab·cosC（求邊）；cosC = (a²+b²−c²)/2ab（求角）' },
+  { id: 'f38', unit: 'trig1', front: '三角形面積（兩邊夾角）與海龍公式', back: '面積 = (1/2)ab·sinC；海龍 = √(s(s−a)(s−b)(s−c))，s=半周長' },
+  { id: 'f39', unit: 'trig1', front: 'sin(180°−θ)、cos(180°−θ)', back: 'sin(180°−θ)=sinθ；cos(180°−θ)=−cosθ（補角）' },
+  { id: 'f40', unit: 'trig2', front: '和角公式 sin(A±B)、cos(A±B)', back: 'sin(A±B)=sinAcosB±cosAsinB；cos(A±B)=cosAcosB∓sinAsinB（cos 符號相反）' },
+  { id: 'f41', unit: 'trig2', front: '倍角公式', back: 'sin2θ=2sinθcosθ；cos2θ=cos²θ−sin²θ=2cos²θ−1=1−2sin²θ' },
+  { id: 'f42', unit: 'trig2', front: '疊合 a·sinθ + b·cosθ', back: '= √(a²+b²)·sin(θ+φ)，最大值 √(a²+b²)、最小值 −√(a²+b²)' },
+  { id: 'f43', unit: 'trig2', front: 'y = sin(bx) 的週期', back: '2π/|b|（tan 的週期是 π/|b|）' },
+  // 平面向量
+  { id: 'f44', unit: 'vec', front: '內積的兩種算法', back: 'a·b = |a||b|cosθ = x₁x₂+y₁y₂' },
+  { id: 'f45', unit: 'vec', front: '向量垂直與平行的判定', back: '垂直 ⇔ 內積=0；平行 ⇔ x₁y₂−x₂y₁=0' },
+  { id: 'f46', unit: 'vec', front: '正射影向量', back: 'a 在 b 上的正射影 = (a·b/|b|²)·b；長度 = |a·b|/|b|' },
+  { id: 'f47', unit: 'vec', front: '兩向量張出的三角形面積', back: '(1/2)|x₁y₂−x₂y₁|（平行四邊形不除 2）' },
+  { id: 'f48', unit: 'vec', front: '分點公式（AP:PB = m:n）', back: 'P = (n·A + m·B)/(m+n)——靠近誰，誰的權重反而小' },
+  { id: 'f49', unit: 'vec', front: '三角形重心（向量）', back: 'G = (A+B+C)/3' },
+  { id: 'f50', unit: 'vec', front: '柯西不等式（二維）', back: '(a²+b²)(c²+d²) ≥ (ac+bd)²；等號 ⇔ ad=bc（平行時）' },
+  // 空間
+  { id: 'f51', unit: 'svec', front: '空間兩點距離', back: '√(Δx²+Δy²+Δz²)' },
+  { id: 'f52', unit: 'svec', front: '外積的幾何意義', back: '|a×b| = 兩向量張出的平行四邊形面積；方向依右手定則、同時垂直 a 與 b' },
+  { id: 'f53', unit: 'splane', front: '平面 ax+by+cz=d 的法向量', back: '(a, b, c)——係數直接讀' },
+  { id: 'f54', unit: 'splane', front: '點到平面距離', back: '|ax₀+by₀+cz₀−d| / √(a²+b²+c²)' },
+  { id: 'f55', unit: 'splane', front: '兩平面的夾角', back: '＝兩法向量的夾角（取銳角）；平行 ⇔ 法向量平行' },
+  { id: 'f56', unit: 'svec', front: '三垂線定理', back: '平面外一點的斜線在平面上的投影若垂直平面內某直線，則斜線本身也垂直該直線（垂直投影 ⇒ 垂直斜線）' },
+  // 矩陣
+  { id: 'f57', unit: 'mat', front: '二階行列式與面積放大率', back: 'det = ad−bc；線性變換把面積放大 |det| 倍' },
+  { id: 'f58', unit: 'mat', front: '二階反矩陣', back: '(1/(ad−bc))·[d −b; −c a]——主對角線互換、副對角線變號' },
+  { id: 'f59', unit: 'mat', front: '旋轉 θ 的矩陣', back: '[cosθ −sinθ; sinθ cosθ]' },
+  { id: 'f60', unit: 'mat', front: '轉移矩陣的特徵', back: '每一行（欄）的和 = 1、元素皆 ≥0；穩定狀態＝乘再多次也不變的分布' },
+  // 幾何原則
+  { id: 'f61', unit: 'line', front: '平行四邊形對角線性質', back: '互相平分（交點是兩對角線中點）' },
+  { id: 'f62', unit: 'line', front: '三角形兩邊中點連線', back: '平行第三邊、長度是第三邊的一半' },
+  { id: 'f63', unit: 'prob', front: '至少一次的機率', back: 'P(至少一次) = 1 − P(一次都沒有)——「至少」先想補集' },
+  { id: 'f64', unit: 'num', front: '√a·√b 與 √(a²b) 的化簡', back: '√48 = √(16·3) = 4√3——先抓最大平方因數' },
+  { id: 'f65', unit: 'exp', front: '2¹⁰ ≈ ?（常用近似）', back: '2¹⁰ = 1024 ≈ 10³；log₁₀2 ≈ 0.3010、log₁₀3 ≈ 0.4771' },
+  { id: 'f66', unit: 'data', front: '中位數/四分位數要先做什麼？', back: '先排序！Q1、Q3 分別是前半、後半的中位數；IQR = Q3−Q1' },
+];
+
+/* 把數值答案的生成題自動變成 4 選 1（手機純按鈕用） */
+function optionize(it) {
+  if (it.opts) return { q: it.q, opts: it.opts, ans: it.ans };
+  const s = String(it.ans);
+  const alts = new Set();
+  const frac = s.match(/^(-?\d+)\/(\d+)$/);
+  if (frac) {
+    const p = +frac[1], q = +frac[2];
+    for (const [a, b] of [[p + 1, q], [p, q + 1], [p - 1, q], [-p, q], [p + 1, q + 1]]) {
+      if (b > 0 && !(a === p && b === q) && !(a === 0)) alts.add(b === 1 ? String(a) : `${a}/${b}`);
+    }
+  } else if (/^-?\d+$/.test(s)) {
+    const v = +s;
+    for (const x of [v + 1, v - 1, v + 2, v - 2, -v, v + 10, 2 * v, v - 10]) if (x !== v) alts.add(String(x));
+  } else if (/^-?\d+,-?\d+$/.test(s)) {
+    const [a, b] = s.split(',').map(Number);
+    for (const t of [`${-a},${-b}`, `${a + 1},${b}`, `${a},${b - 1}`, `${a - 1},${b + 1}`]) if (t !== s) alts.add(t);
+  } else return null;
+  const three = shuffle([...alts]).slice(0, 3);
+  if (three.length < 3) return null;
+  const opts = shuffle([s, ...three]);
+  return { q: it.q, opts, ans: opts.indexOf(s) };
+}
+function phoneLog(ok, ms) {
+  S.phone = S.phone || { days: {}, hist: [], cards: {} };
+  S.phone.days = S.phone.days || {}; S.phone.hist = S.phone.hist || []; S.phone.cards = S.phone.cards || {};
+  const t = today();
+  const d = (S.phone.days[t] = S.phone.days[t] || { n: 0, ok: 0, ms: 0 });
+  d.n++; if (ok) d.ok++; d.ms += ms || 0;
+  save();
+}
+function renderPhone() {
+  const t = today();
+  const p = S.phone && S.phone.days && S.phone.days[t];
+  const hist = (S.phone && S.phone.hist || []).slice(-6);
+  app().innerHTML = `
+    <h1>📱 手機專區</h1>
+    <p class="dim">通勤、排隊、零碎時間用：全程<b>按鈕作答</b>——不手寫、不打字、單手就能練。
+    內容鎖定學測數A「該背得出來、該心算得出來」的公式、定理、幾何原則、特殊值，以及老師 42 堂課強調要背的口訣。紀錄一樣自動上雲。</p>
+    <div class="grid">
+      <div class="card drill-card"><b>⚡ 心算快答</b>
+        <p class="dim">特殊角、指對數、二次頂點、C/P、內積、行列式、根式化簡……12 題連發、4 選 1。</p>
+        <button class="btn primary" onclick="startPhoneQuiz()">開始 12 題</button></div>
+      <div class="card drill-card"><b>🧠 公式必背卡</b>
+        <p class="dim">學測範圍必背公式／定理／幾何原則（${FLASH.length} 張）：看題面→翻面→按「記得/忘了」。忘過的卡會更常出現。</p>
+        <button class="btn primary" onclick="startPhoneFlash('formula')">抽 10 張</button></div>
+      <div class="card drill-card"><b>🧑‍🏫 老師口訣卡</b>
+        <p class="dim">42 堂課蒸餾的口訣（1500+ 條）——老師上課強調該背的都在這。第一次要登入載入。</p>
+        <button class="btn primary" onclick="startPhoneFlash('mn')">抽 10 張</button></div>
+    </div>
+    ${p ? `<div class="card"><p>📅 今日手機練：<b>${p.n}</b> 題/卡｜答對/記得 <b>${p.ok}</b>（${p.n ? Math.round(100 * p.ok / p.n) : 0}%）</p></div>` : ''}
+    ${hist.length ? `<div class="card"><h2>近幾輪</h2><table class="tbl"><tr><th>日期</th><th>模式</th><th>成績</th></tr>
+      ${hist.map((h) => `<tr><td>${h.d}</td><td>${h.mode === 'quiz' ? '⚡ 心算' : h.mode === 'mn' ? '🧑‍🏫 口訣' : '🧠 公式'}</td><td>${h.ok}/${h.n}</td></tr>`).reverse().join('')}</table></div>` : ''}`;
+}
+let phone = null;
+function startPhoneQuiz() {
+  if (!syncGate()) return;
+  phone = { mode: 'quiz', items: [], i: 0, ok: 0, t0: 0, results: [], tapped: false };
+  const keys = ['tri', 'logexp', 'quad', 'rem', 'cnk', 'dot', 'seqd', 'mul', 'root', 'mat2', 'frac'];
+  let guard = 0;
+  while (phone.items.length < 12 && guard++ < 100) {
+    const k = pick(keys);
+    const o = optionize(DRILLS[k].gen());
+    if (o) { o.src = DRILLS[k].name; phone.items.push(o); }
+  }
+  sessionActive = true;
+  sessionMode = 'phone';
+  phoneQuizNext();
+}
+function phoneQuizNext() {
+  if (!phone) return;
+  if (phone.i >= phone.items.length) return phoneQuizDone();
+  const it = phone.items[phone.i];
+  phone.t0 = Date.now();
+  phone.tapped = false;
+  app().innerHTML = `
+    <div class="session-head"><span>⚡ 心算快答｜第 ${phone.i + 1} / ${phone.items.length} 題</span>
+      <span class="shr"><span id="ptimer" class="timer">0.0s</span>
+      <button class="btn sm xbtn" onclick="exitFlow()">✕</button></span></div>
+    <div class="card qcard"><div class="qtext big">${it.q}</div>
+      <div class="pbtns">${it.opts.map((o, i) => `<button class="btn pbtn" onclick="phoneTap(${i})">${o}</button>`).join('')}</div>
+      <div id="pfb"></div></div>
+    <p class="dim" style="text-align:center">${it.src}｜全按鈕作答</p>`;
+  sessionChrome(true);
+  startTicker(() => { const t = $('#ptimer'); if (t) t.textContent = ((Date.now() - phone.t0) / 1000).toFixed(1) + 's'; });
+}
+function phoneTap(idx) {
+  if (!phone || phone.tapped) return;
+  phone.tapped = true;
+  stopTicker();
+  const it = phone.items[phone.i];
+  const ms = Date.now() - phone.t0;
+  const ok = idx === it.ans;
+  phone.results.push({ ok, ms });
+  if (ok) phone.ok++;
+  phoneLog(ok, ms);
+  document.querySelectorAll('.pbtn').forEach((b, i) => {
+    b.disabled = true;
+    if (i === it.ans) b.classList.add('good');
+    else if (i === idx) b.classList.add('badpick');
+  });
+  const fb = $('#pfb');
+  if (ok) {
+    fb.innerHTML = `<p class="ok">✔（${(ms / 1000).toFixed(1)}s）</p>`;
+    phone.nextTimer = setTimeout(() => { if (phone && sessionMode === 'phone') { phone.i++; phoneQuizNext(); } }, 450);
+  } else {
+    fb.innerHTML = `<p class="bad">✘ 正解：<b>${it.opts[it.ans]}</b></p>
+      <div class="actr"><button class="btn primary" onclick="phone.i++;phoneQuizNext()">下一題</button></div>`;
+  }
+}
+function phoneQuizDone() {
+  sessionActive = false; sessionMode = null; sessionChrome(false);
+  const n = phone.results.length;
+  const med = median(phone.results.map((r) => r.ms));
+  S.phone.hist.push({ d: today(), mode: 'quiz', n, ok: phone.ok });
+  if (S.phone.hist.length > 200) S.phone.hist = S.phone.hist.slice(-200);
+  save();
+  const acc = n ? Math.round(100 * phone.ok / n) : 0;
+  app().innerHTML = `<h1>心算快答 — 結果</h1>
+    <div class="card ${acc === 100 ? 'good' : ''}">
+      <p class="big">答對 <b>${phone.ok} / ${n}</b>（${acc}%）｜中位數 <b>${(med / 1000).toFixed(1)}s</b></p>
+      ${acc === 100 ? '<p class="praise">🎉 全對——這些基本運算正在變成反射！</p>' : acc >= 80 ? '<p class="praise">🎉 手感不錯，錯的那幾題就是還沒自動化的位置。</p>' : ''}
+      <div class="actr"><button class="btn" onclick="nav('phone')">回手機專區</button>
+      <button class="btn primary" onclick="startPhoneQuiz()">再來 12 題</button></div>
+    </div>`;
+}
+function startPhoneFlash(kind) {
+  if (!syncGate()) return;
+  const go = (deck) => {
+    if (!deck || !deck.length) { alert(mlibEmptyMsg()); return; }
+    S.phone = S.phone || { days: {}, hist: [], cards: {} };
+    const st = (S.phone.cards = S.phone.cards || {});
+    // 權重：忘過的 > 沒看過的 > 記得的，加隨機擾動避免死循環
+    const scored = deck.map((c) => {
+      const r = st[c.id];
+      return { c, w: (r ? r.m * 5 - r.s * 0.5 : 2) + Math.random() * 3 };
+    });
+    scored.sort((a, b) => b.w - a.w);
+    phone = { mode: 'flash', kind, cards: shuffle(scored.slice(0, 10).map((x) => x.c)), i: 0, mem: 0, t0: 0, back: false };
+    sessionActive = true;
+    sessionMode = 'phone';
+    flashShow();
+  };
+  if (kind === 'formula') { go(FLASH); return; }
+  loadMethodLib().then((lib) => {
+    if (!lib) { alert(mlibEmptyMsg()); return; }
+    const deck = [];
+    for (const u of Object.keys(lib)) lib[u].forEach((m, i) => {
+      if (m.mnemonic) deck.push({ id: `mn:${u}:${m.lec}:${i}`, unit: u, front: m.concept, back: `🔑 ${m.mnemonic}`, extra: m.method });
+    });
+    go(deck);
+  });
+}
+function flashShow() {
+  if (!phone) return;
+  if (phone.i >= phone.cards.length) return flashDone();
+  const c = phone.cards[phone.i];
+  phone.t0 = Date.now();
+  phone.back = false;
+  app().innerHTML = `
+    <div class="session-head"><span>${phone.kind === 'mn' ? '🧑‍🏫 老師口訣卡' : '🧠 公式必背卡'}｜${phone.i + 1} / ${phone.cards.length}</span>
+      <span class="shr"><button class="btn sm xbtn" onclick="exitFlow()">✕</button></span></div>
+    <div class="card flashcard" onclick="flashFlip()">
+      <p class="dim">${TOPICS[c.unit] || ''}</p>
+      <div class="flash-front">${escH(c.front)}</div>
+      <div id="flash-back" style="display:none">
+        <div class="flash-backtxt">${escH(c.back)}</div>
+        ${c.extra ? `<p class="dim flash-extra">${escH(c.extra)}</p>` : ''}
+      </div>
+    </div>
+    <div class="flash-btns" id="flash-btns"><button class="btn primary big" onclick="flashFlip()">翻面看答案</button></div>
+    <p class="dim" style="text-align:center">先在腦中作答，再翻面對照——想不起來就誠實按「忘了」</p>`;
+  sessionChrome(true);
+}
+function flashFlip() {
+  if (!phone || phone.back) return;
+  phone.back = true;
+  const b = $('#flash-back'); if (b) b.style.display = 'block';
+  const bt = $('#flash-btns');
+  if (bt) bt.innerHTML = `<button class="btn err big" onclick="flashJudge(false)">❌ 忘了</button>
+    <button class="btn primary big" onclick="flashJudge(true)">✅ 背得出來</button>`;
+}
+function flashJudge(ok) {
+  if (!phone || !phone.back) return;
+  const c = phone.cards[phone.i];
+  const st = (S.phone.cards[c.id] = S.phone.cards[c.id] || { s: 0, m: 0 });
+  st.s++; if (!ok) st.m++;
+  if (ok) phone.mem++;
+  phoneLog(ok, Date.now() - phone.t0);
+  phone.i++;
+  flashShow();
+}
+function flashDone() {
+  sessionActive = false; sessionMode = null; sessionChrome(false);
+  S.phone.hist.push({ d: today(), mode: phone.kind === 'mn' ? 'mn' : 'flash', n: phone.cards.length, ok: phone.mem });
+  if (S.phone.hist.length > 200) S.phone.hist = S.phone.hist.slice(-200);
+  save();
+  const all = phone.mem === phone.cards.length && phone.cards.length > 0;
+  app().innerHTML = `<h1>背誦結果</h1><div class="card ${all ? 'good' : ''}">
+    <p class="big">記得 <b>${phone.mem} / ${phone.cards.length}</b></p>
+    ${all ? '<p class="praise">🎉 這疊全部記得——它們已經在你腦裡站穩了！</p>' : '<p class="dim">忘掉的卡之後會更常抽到，抽到你背熟為止。</p>'}
+    <div class="actr"><button class="btn" onclick="nav('phone')">回手機專區</button>
+    <button class="btn primary" onclick="startPhoneFlash('${phone.kind === 'mn' ? 'mn' : 'formula'}')">再抽 10 張</button></div></div>`;
+}
+
 function renderDrillMenu() {
   const cards = Object.keys(DRILLS).map((k) => {
     const d = DRILLS[k];
@@ -1211,6 +1682,7 @@ function drillDone() {
   }).join('');
   app().innerHTML = `
     <h1>${d.name} — 結果</h1>
+    ${dailyBanner(1)}
     <div class="card ${pass ? 'good' : ''}">
       <p class="big">中位數 <b>${(med / 1000).toFixed(1)}s</b>／目標 ${d.target}s ｜ 答對 <b class="${accOK ? 'okc' : 'badc'}">${acc}%</b></p>
       <p>達標＝兩個條件同時成立：
@@ -1311,6 +1783,7 @@ function pracDone() {
     : r.length && okN >= Math.ceil(r.length * 0.7) ? '大部分都拿下了，把錯的釘進錯題本，這輪就值回票價。' : '';
   app().innerHTML = `
     <h1>刷題結果</h1>
+    ${dailyBanner(3)}
     <div class="card">
       <p class="big">答對 <b>${okN} / ${r.length}</b>${slowOk ? `，其中 <b class="warnc">${slowOk} 題「對但超時」</b>（考場上等於失分，已加入錯題本重練速度）` : ''}</p>
       ${cheer ? `<p class="praise">🎉 ${cheer}</p>` : ''}
@@ -1822,7 +2295,7 @@ function reviewNext() {
     sessionChrome(false);
     const denom = review.ids.length - (review.excl || 0);
     const allPass = denom > 0 && review.okN === denom;
-    app().innerHTML = `<h1>重測完成</h1><div class="card good">
+    app().innerHTML = `<h1>重測完成</h1>${dailyBanner(2)}<div class="card good">
       <p class="big">過關 ${review.okN} / ${denom}</p>
       ${review.excl ? `<p class="dim">（另有 ${review.excl} 題因中途離開未列入）</p>` : ''}
       ${allPass ? '<p class="praise">🎉 到期錯題全數過關——之前跌倒的地方都站起來了，這是最扎實的一種進步！</p>' : ''}
@@ -1847,7 +2320,7 @@ function reviewNext() {
 /* ═══════════ 數據 ═══════════ */
 function renderStats() {
   if (!S.attempts.length) {
-    app().innerHTML = `<h1>📊 數據</h1><div class="card"><p>還沒有數據。先去做一次「模擬實戰」摸底，或刷一輪主題題。</p>
+    app().innerHTML = `<h1>📊 數據</h1>${dailyCard()}<div class="card"><p>還沒有做題數據。先去做一次「模擬實戰」摸底，或刷一輪主題題。</p>
       <div class="actr"><button class="btn primary" onclick="nav('mock')">去摸底</button></div></div>${aiCard()}${syncCard()}${backupCard()}`;
     return;
   }
@@ -1914,6 +2387,7 @@ function renderStats() {
   }).join('');
   app().innerHTML = `
     <h1>📊 數據</h1>
+    ${dailyCard()}
     ${worst.length ? `<div class="card warn"><b>本週優先攻擊目標：</b>${worst.map((t) => TOPICS[t.k]).join('、')}
       <span class="dim">（答對率最低／耗時比最高的單元——把刷題時間集中在這裡，不要平均分配）</span></div>` : ''}
     <div class="card"><h2>單元答對率與速度比</h2>
@@ -1946,6 +2420,8 @@ function renderPlan() {
     <h1>🗓️ 作戰計畫 <span class="dim">距學測 ${days} 天（約 ${weeks} 週）</span></h1>
     <div class="card">
       <h2>今日清單（每天約 60 分鐘數A）</h2>
+      <div class="actr"><button class="btn primary big" onclick="startDaily()">▶ 一鍵開始今日菜單</button></div>
+      <p class="dim">一鍵＝自動排程「速訓（挑最該練的）→ 清到期錯題 → 刷題 8 題（挑最弱單元）」，每段做完自動打勾，不用自己選。</p>
       ${checklist}
       <p class="dim">已執行 ${streak} 天。每週三、六把「主題限時」換成一次「⏱️ 模擬實戰」。</p>
     </div>
@@ -2112,6 +2588,24 @@ function mergeState(a, b) {
   const merged = { ...b, ...a, attempts, wrong, drills, mocks, daily, extbank };
   // AI key：取「最後修改時間較新」的一方（避免舊裝置的舊 key 蓋掉新換的 key）
   if ((b.aikeyTs || 0) > (a.aikeyTs || 0)) { merged.aikey = b.aikey; merged.aikeyTs = b.aikeyTs; }
+  // 手機專區數據：days 逐日取較大者、hist 聯集、卡片記憶取看過較多的一方
+  const pa = a.phone || {}, pb = b.phone || {};
+  if (Object.keys(pa).length || Object.keys(pb).length) {
+    const pdays = { ...(pb.days || {}) };
+    for (const d of Object.keys(pa.days || {})) {
+      const x = pa.days[d], y = pdays[d];
+      pdays[d] = !y || x.n >= y.n ? x : y;
+    }
+    const phist = [...(pa.hist || [])];
+    const hs = new Set(phist.map((h) => JSON.stringify(h)));
+    for (const h of pb.hist || []) if (!hs.has(JSON.stringify(h))) phist.push(h);
+    const pcards = { ...(pb.cards || {}) };
+    for (const k of Object.keys(pa.cards || {})) {
+      const x = pa.cards[k], y = pcards[k];
+      pcards[k] = !y || x.s >= y.s ? x : y;
+    }
+    merged.phone = { days: pdays, hist: phist.slice(-200), cards: pcards };
+  }
   return merged;
 }
 let inkQueue = []; // 上傳失敗的筆跡列，連上網或下次同步時補傳（上限 200 筆防爆記憶體）
