@@ -72,7 +72,7 @@ li { margin: 4px 0; }
 .card.good { border-color: var(--ok); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .drill-card { margin: 0; display: flex; flex-direction: column; gap: 2px; }
-.drill-card .btn { margin-top: auto; }
+.drill-card .btn { margin-top: auto; align-self: flex-end; }
 
 .btn {
   background: var(--panel2); color: var(--text);
@@ -91,6 +91,11 @@ li { margin: 4px 0; }
 .btn.err:hover { background: var(--bad); color: #fff; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .xbtn { margin: 0 0 0 6px; color: var(--dim); }
+
+/* 動作按鈕列一律靠右（飼主是右撇子，右手持筆點按最順） */
+.actr { display: flex; justify-content: flex-end; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 2px; }
+.chips.r { justify-content: flex-end; }
+.ansrow .btn { align-self: flex-end; }
 
 .opt.block {
   display: block; width: 100%; text-align: left; margin: 5px 0;
@@ -122,7 +127,7 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
   padding: 10px 14px; font-size: 17px; width: 220px; font-family: inherit;
 }
 .ans-input:focus { outline: none; border-color: var(--accent); }
-.mock-actions { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mock-actions { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .typed-opt { margin-top: 4px; font-size: 13px; }
 .typed-opt summary { cursor: pointer; color: var(--dim); }
 

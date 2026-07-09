@@ -60,9 +60,9 @@ function backupCard() {
   return `<div class="card"><h2>💾 資料備份</h2>
     <p class="dim">所有紀錄只存在<b>這台裝置、這個瀏覽器</b>的 localStorage（跟著網址的網域走）——
     換裝置、換網址、清瀏覽器資料都<b>不會自動帶走</b>。養成習慣：每週日匯出一份，存進雲端硬碟或傳給自己。</p>
-    <button class="btn" onclick="exportData()">匯出備份（.json）</button>
+    <div class="actr"><button class="btn" onclick="exportData()">匯出備份（.json）</button>
     <button class="btn" onclick="$('#impfile').click()">匯入備份</button>
-    <button class="btn" onclick="exportInk()">匯出今日筆跡</button>
+    <button class="btn" onclick="exportInk()">匯出今日筆跡</button></div>
     <input type="file" id="impfile" accept=".json,application/json" style="display:none" onchange="importData(this)">
     <p class="dim">筆跡（手寫板的完整書寫過程）：<b>登入雲端同步時每題自動永久歸檔</b>，供 AI 後續統整分析你的運算習慣；未登入的話只存在本次頁面記憶體，關頁就消失——沒登入練完記得先匯出。</p>
   </div>`;
@@ -443,9 +443,9 @@ function aiCard() {
     從計算過程指出<b>從哪一步開始算錯</b>、該稱讚時稱讚。key 只存在這台裝置的瀏覽器，不會進雲端也不會進備份檔。
     沒填也能用：改為「看正解自評」模式（一樣不用打字）。</p>
     <input id="aikey" class="ans-input" type="password" autocomplete="off" placeholder="sk-ant-..." value="${aiKey() ? '••••••••（已設定）' : ''}">
-    <div style="margin-top:8px">
-      <button class="btn primary" onclick="aiKeySave()">儲存</button>
+    <div class="actr">
       ${aiKey() ? '<button class="btn" onclick="aiKeyClear()">清除 key</button>' : ''}
+      <button class="btn primary" onclick="aiKeySave()">儲存</button>
     </div></div>`;
 }
 function stripTags(s) { return String(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -456,12 +456,14 @@ async function aiGradeCall(q, correctTxt, ansB64, calcB64) {
   const content = [];
   if (ansB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: ansB64 } });
   if (calcB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: calcB64 } });
+  const teach = S.teach && S.teach[q.id];
   content.push({
     type: 'text',
     text: `你是嚴謹但溫暖的數學閱卷老師。以下是一位學測考生的手寫作答。
 題目：${stripTags(q.q)}
 正確答案：${correctTxt}
 ${q.sol ? `參考詳解：${stripTags(q.sol)}` : ''}
+${teach && teach.sol ? `他補習班老師教這題的方法（指出錯誤或建議路線時優先對照這個教法）：${stripTags(teach.sol)}${teach.tip ? '｜老師口訣：' + stripTags(teach.tip) : ''}` : ''}
 圖1＝考生手寫的「最終答案區」${calcB64 ? '，圖2＝考生的完整手寫計算過程' : '（沒有計算過程圖）'}。
 任務：
 1. 辨識答案區的最終答案（若答案區空白，從計算過程末尾找最終結果）。
@@ -752,7 +754,7 @@ function renderHome() {
   if (mocks === 0) {
     status = `<div class="card warn"><b>第一步：先做一次「模擬實戰」摸底。</b><br>
       你現在最缺的不是題目，是<b>數據</b>——先花 36 分鐘產生第一筆「每題耗時 × 錯因」紀錄，系統才知道你卡在哪。
-      <div style="margin-top:8px"><button class="btn primary" onclick="nav('mock')">開始摸底模擬 →</button></div></div>`;
+      <div class="actr"><button class="btn primary" onclick="nav('mock')">開始摸底模擬 →</button></div></div>`;
   } else {
     const recent = S.attempts.slice(-30);
     const acc = recent.filter((a) => a.ok).length / recent.length;
@@ -1011,7 +1013,7 @@ function drillNext() {
   drill.t0 = Date.now();
   drill.qid = `drill:${drill.key}:${drill.t0}`;
   const input = it.kind === 'num'
-    ? ansZoneHTML('答案寫這裡') + `<button class="btn primary big" onclick="drillSubmit()">✅ 算完了</button>
+    ? ansZoneHTML('答案寫這裡') + `<div class="actr"><button class="btn primary big" onclick="drillSubmit()">✅ 算完了</button></div>
        <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
        <input id="din" class="ans-input" inputmode="text" autocomplete="off" placeholder="答案" onkeydown="if(event.key==='Enter')drillSubmit()"></details>`
     : it.opts.map((o, idx) => `<button class="btn opt" onclick="drillSubmit(${idx})">${o}</button>`).join('');
@@ -1049,8 +1051,8 @@ function drillSubmit(optIdx) {
     // 手寫作答：秀正解 → 自評對錯（不需要鍵盤）
     drill.pend = { ms, proc };
     $('#dfb').innerHTML = `<div class="judge-box"><p>正解：<b class="big accent">${it.ans}</b>　對照你答案區寫的——一樣嗎？</p>
-      <button class="btn primary" onclick="drillJudge(true)">✓ 我對了</button>
-      <button class="btn err" onclick="drillJudge(false)">✗ 我錯了</button></div>`;
+      <div class="actr"><button class="btn err" onclick="drillJudge(false)">✗ 我錯了</button>
+      <button class="btn primary" onclick="drillJudge(true)">✓ 我對了</button></div></div>`;
   };
   if (ms >= 360000) {
     modal(`<h2>⏸ 這題用了 ${fmtSec(ms)}</h2><p>是不是有中途離開座位？有的話這題不列入本輪，避免污染速度數據。</p>`, [
@@ -1078,7 +1080,7 @@ function drillFinish(ok, given, ms, proc) {
     drill.nextTimer = setTimeout(drillNext, 500); // endSession 會清掉，避免退出後殭屍題復活
   } else {
     fb.innerHTML = `<p class="bad">✘ 錯了，正確答案：<b>${ansTxt}</b></p>
-      <button class="btn primary" onclick="drill.i++;drillNext()">下一題</button>`;
+      <div class="actr"><button class="btn primary" onclick="drill.i++;drillNext()">下一題</button></div>`;
   }
 }
 function drillDone() {
@@ -1146,8 +1148,8 @@ function drillDone() {
       <ul>${slows.map((r) => `<li>${r.q}　<b class="warnc">${(r.ms / 1000).toFixed(1)}s</b></li>`).join('')}</ul></div>` : ''}
     <div class="card"><h2>逐題明細</h2>
       <div style="overflow-x:auto"><table class="tbl"><tr><th>#</th><th>題目</th><th>作答</th><th>正解</th><th>耗時</th></tr>${rows}</table></div>
-      <button class="btn primary" onclick="startDrill('${drill.key}')">再來一輪</button>
-      <button class="btn" onclick="nav('drill')">回特訓選單</button>
+      <div class="actr"><button class="btn" onclick="nav('drill')">回特訓選單</button>
+      <button class="btn primary" onclick="startDrill('${drill.key}')">再來一輪</button></div>
     </div>`;
 }
 
@@ -1177,7 +1179,7 @@ function renderPracConfig() {
         <label class="chip"><input type="radio" name="cnt" value="8" checked> 8 題</label>
         <label class="chip"><input type="radio" name="cnt" value="12"> 12 題</label>
       </div>
-      <button class="btn primary" onclick="startPrac()">開始（未做過的題優先）</button>
+      <div class="actr"><button class="btn primary" onclick="startPrac()">開始（未做過的題優先）</button></div>
     </div>`;
 }
 let prac = null;
@@ -1232,8 +1234,8 @@ function pracDone() {
       <p class="big">答對 <b>${okN} / ${r.length}</b>${slowOk ? `，其中 <b class="warnc">${slowOk} 題「對但超時」</b>（考場上等於失分，已加入錯題本重練速度）` : ''}</p>
       ${cheer ? `<p class="praise">🎉 ${cheer}</p>` : ''}
       <table class="tbl"><tr><th>單元</th><th>結果</th><th>耗時/目標</th><th>錯因</th></tr>${rows}</table>
-      <button class="btn primary" onclick="nav('prac')">再刷一輪</button>
-      <button class="btn" onclick="nav('stats')">看數據</button>
+      <div class="actr"><button class="btn" onclick="nav('stats')">看數據</button>
+      <button class="btn primary" onclick="nav('prac')">再刷一輪</button></div>
     </div>`;
 }
 
@@ -1249,9 +1251,9 @@ function renderQuestion(q, cfg) {
   } else if (q.type === 'multi') {
     ansUI = q.opts.map((o, i) =>
       `<label class="opt block check"><input type="checkbox" value="${i}"> (${i + 1}) ${o}</label>`).join('')
-      + `<button class="btn primary" onclick="qSubmit()">送出（多選）</button>`;
+      + `<div class="actr"><button class="btn primary" onclick="qSubmit()">送出（多選）</button></div>`;
   } else {
-    ansUI = ansZoneHTML() + `<button class="btn primary big" onclick="qSubmit()">✅ 算完了，開始批改</button>
+    ansUI = ansZoneHTML() + `<div class="actr"><button class="btn primary big" onclick="qSubmit()">✅ 算完了，開始批改</button></div>
       <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
       <input id="qin" class="ans-input" autocomplete="off" placeholder="輸入答案（分數用 a/b）" onkeydown="if(event.key==='Enter')qSubmit()"></details>`;
   }
@@ -1329,13 +1331,13 @@ function qShowJudge(hasAI) {
   if (hasAI && v) {
     $('#qfb').innerHTML = `${aiFeedbackHTML(v)}${peek}
       <p class="dim">AI 判得對就繼續；判錯了可以改判。</p>
-      <button class="btn primary" onclick="qResolve(${!!v.correct})">${v.correct ? '✓ 沒錯，我答對了' : '✗ 對，我答錯了'}——繼續</button>
-      <button class="btn" onclick="qResolve(${!v.correct})">改判：其實我${v.correct ? '錯了' : '對了'}</button>`;
+      <div class="actr"><button class="btn" onclick="qResolve(${!v.correct})">改判：其實我${v.correct ? '錯了' : '對了'}</button>
+      <button class="btn primary" onclick="qResolve(${!!v.correct})">${v.correct ? '✓ 沒錯，我答對了' : '✗ 對，我答錯了'}——繼續</button></div>`;
   } else {
     $('#qfb').innerHTML = `${peek}
       <p><b>對照你答案區寫的——答對了嗎？</b><span class="dim">（等價形式都算對：多根順序不同、沒化簡、有沒有寫 x= 都算；座標類順序要照題目）</span></p>
-      <button class="btn primary" onclick="qResolve(true)">✓ 我對了</button>
-      <button class="btn err" onclick="qResolve(false)">✗ 我錯了</button>`;
+      <div class="actr"><button class="btn err" onclick="qResolve(false)">✗ 我錯了</button>
+      <button class="btn primary" onclick="qResolve(true)">✓ 我對了</button></div>`;
   }
 }
 function qResolve(ok) {
@@ -1359,19 +1361,19 @@ function qResolve(ok) {
       ${q.tip ? `<p class="tip">💡 <b>快解：</b>${q.tip}</p>` : ''}
       ${teachBlock(q.id)}
       ${inkSummary(qsess.proc)}
-      ${qsess.proc && qsess.proc.n ? `<button class="btn sm" onclick="inkReplay('${jsA(q.id)}', ${qsess.t0})">▶ 回放解題過程</button>` : ''}
+      ${qsess.proc && qsess.proc.n ? `<div class="actr"><button class="btn sm" onclick="inkReplay('${jsA(q.id)}', ${qsess.t0})">▶ 回放解題過程</button></div>` : ''}
       ${qsess.exclude ? '<p class="warnc">（依你的選擇，這筆不列入紀錄）</p>' : ''}
     </div>`;
   if (!ok) {
     fb.innerHTML = solBlock + `
       <p><b>錯因是什麼？（誠實選，這決定你之後練什麼）</b></p>
-      <div class="chips">${ERR_TYPES.slice(0, 4).map((e) =>
+      <div class="chips r">${ERR_TYPES.slice(0, 4).map((e) =>
         `<button class="btn err" onclick="qFinish(false, ${ms}, '${e}')">${e}</button>`).join('')}
       </div>`;
   } else if (overtime) {
-    fb.innerHTML = solBlock + `<button class="btn primary" onclick="qFinish(true, ${ms}, '超時')">下一題</button>`;
+    fb.innerHTML = solBlock + `<div class="actr"><button class="btn primary" onclick="qFinish(true, ${ms}, '超時')">下一題</button></div>`;
   } else {
-    fb.innerHTML = solBlock + `<button class="btn primary" onclick="qFinish(true, ${ms}, null)">下一題</button>`;
+    fb.innerHTML = solBlock + `<div class="actr"><button class="btn primary" onclick="qFinish(true, ${ms}, null)">下一題</button></div>`;
   }
 }
 function qFinish(ok, ms, err) {
@@ -1400,7 +1402,7 @@ function renderMockIntro() {
         <li>每題顯示建議時間上限，超過就該停損——系統會記錄你「該跳沒跳」幾次。</li>
       </ol>
       <p class="dim">已完成 ${n} 次模擬。${n === 0 ? '第一次就是摸底，考差完全沒關係——我們要的是數據。' : ''}</p>
-      <button class="btn primary big" onclick="startMock()">開始模擬（36:00 倒數）</button>
+      <div class="actr"><button class="btn primary big" onclick="startMock()">開始模擬（36:00 倒數）</button></div>
     </div>`;
 }
 let mock = null;
@@ -1437,7 +1439,7 @@ function mockNext() {
       app().innerHTML = `<div class="card good"><h2>第一輪完成 ✔</h2>
         <p>剩餘 <b>${fmtClock(mock.tEnd - Date.now())}</b>，回頭處理 ${mock.paper.length} 題跳過的題。<br>
         還是沒路線的題，直接放棄它——保住檢查時間。</p>
-        <button class="btn primary" onclick="mockQ()">進入第二輪</button></div>`;
+        <div class="actr"><button class="btn primary" onclick="mockQ()">進入第二輪</button></div></div>`;
       return;
     }
     return mockGrade('全部作答完成');
@@ -1455,9 +1457,9 @@ function mockQ() {
     ansUI = q.opts.map((o, i) => `<button class="btn opt block" onclick="mockAns(${i})">(${i + 1}) ${o}</button>`).join('');
   } else if (q.type === 'multi') {
     ansUI = q.opts.map((o, i) => `<label class="opt block check"><input type="checkbox" value="${i}"> (${i + 1}) ${o}</label>`).join('')
-      + `<button class="btn primary" onclick="mockAns()">送出此題</button>`;
+      + `<div class="actr"><button class="btn primary" onclick="mockAns()">送出此題</button></div>`;
   } else {
-    ansUI = ansZoneHTML() + `<button class="btn primary big" onclick="mockAns()">✅ 算完了 → 下一題</button>
+    ansUI = ansZoneHTML() + `<div class="actr"><button class="btn primary big" onclick="mockAns()">✅ 算完了 → 下一題</button></div>
       <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
       <input id="qin" class="ans-input" autocomplete="off" placeholder="答案（分數用 a/b）" onkeydown="if(event.key==='Enter')mockAns()"></details>`;
   }
@@ -1579,8 +1581,8 @@ function mockJudgePanel(list) {
       <div class="judge-info">
         <p class="dim">${TOPICS[q.topic]}｜正解：<b class="big">${q.ans[0]}</b></p>
         <div id="jai-${i}"></div>
-        <button class="btn sm" id="jok-${i}" onclick="mockJudgeSet(${i}, true)">✓ 對</button>
-        <button class="btn sm" id="jbad-${i}" onclick="mockJudgeSet(${i}, false)">✗ 錯</button>
+        <div class="actr"><button class="btn sm" id="jbad-${i}" onclick="mockJudgeSet(${i}, false)">✗ 錯</button>
+        <button class="btn sm" id="jok-${i}" onclick="mockJudgeSet(${i}, true)">✓ 對</button></div>
       </div>
     </div>`;
   }).join('');
@@ -1591,7 +1593,7 @@ function mockJudgePanel(list) {
       ${aiKey() ? '' : '<span class="dim">（到「📊 數據」頁設定 AI key 後，這一步會由 AI 自動先批＋標出過程錯在哪）</span>'}</p>
       ${items}
       <p id="jmsg" class="dim"></p>
-      <button class="btn primary big" onclick="mockJudgeDone()">完成批改，看結果</button>
+      <div class="actr"><button class="btn primary big" onclick="mockJudgeDone()">完成批改，看結果</button></div>
     </div>`;
   if (aiKey()) mockAIJudge();
 }
@@ -1686,8 +1688,8 @@ function mockFinal() {
       ${aiNotes ? `<div class="sol"><b>🤖 AI 抓到的出錯點：</b><ul>${aiNotes}</ul></div>` : ''}
       <table class="tbl"><tr><th>題目</th><th>結果</th><th>你的答案</th><th>正解</th><th>耗時/建議</th></tr>${rows}</table>
       <p class="dim">錯題與超時題已自動加入錯題本，明天到期重測。詳解請到錯題本逐題看。</p>
-      <button class="btn primary" onclick="nav('wrong')">去看錯題詳解</button>
-      <button class="btn" onclick="nav('stats')">看數據</button>
+      <div class="actr"><button class="btn" onclick="nav('stats')">看數據</button>
+      <button class="btn primary" onclick="nav('wrong')">去看錯題詳解</button></div>
     </div>`;
 }
 
@@ -1712,7 +1714,7 @@ function renderWrong() {
   app().innerHTML = `
     <h1>📓 錯題本 <span class="dim">（間隔重測 1→3→7→14 天，連過四關畢業）</span></h1>
     ${due.length ? `<div class="card warn"><b>${due.length} 題今天到期。</b>先清這些，再刷新題——重測到期錯題的投報率是刷新題的 3 倍。
-      <div style="margin-top:8px"><button class="btn primary" onclick="reviewDue()">開始重測到期題（${due.length}）</button></div></div>` : '<div class="card good">今天沒有到期的錯題 ✅</div>'}
+      <div class="actr"><button class="btn primary" onclick="reviewDue()">開始重測到期題（${due.length}）</button></div></div>` : '<div class="card good">今天沒有到期的錯題 ✅</div>'}
     <div class="card"><table class="tbl"><tr><th>題目</th><th>錯因</th><th>次數</th><th>下次重測</th><th></th></tr>${rows}</table></div>
     <div class="card"><p class="dim"><b>訂正標準（名師版）：</b>不是「看懂詳解」，是能自己說出<b>題目的關鍵條件 → 對應的工具（公式/定理）→ 第一步</b>這條鏈。
     說不出來就還沒訂正完，重測時會原形畢露。</p></div>`;
@@ -1741,7 +1743,7 @@ function reviewNext() {
       ${review.excl ? `<p class="dim">（另有 ${review.excl} 題因中途離開未列入）</p>` : ''}
       ${allPass ? '<p class="praise">🎉 到期錯題全數過關——之前跌倒的地方都站起來了，這是最扎實的一種進步！</p>' : ''}
       <p>答對的題進入下一個間隔；答錯的明天再來。</p>
-      <button class="btn primary" onclick="nav('wrong')">回錯題本</button></div>`;
+      <div class="actr"><button class="btn primary" onclick="nav('wrong')">回錯題本</button></div></div>`;
     return;
   }
   const q = bankById(review.ids[review.i]);
@@ -1762,7 +1764,7 @@ function reviewNext() {
 function renderStats() {
   if (!S.attempts.length) {
     app().innerHTML = `<h1>📊 數據</h1><div class="card"><p>還沒有數據。先去做一次「模擬實戰」摸底，或刷一輪主題題。</p>
-      <button class="btn primary" onclick="nav('mock')">去摸底</button></div>${aiCard()}${syncCard()}${backupCard()}`;
+      <div class="actr"><button class="btn primary" onclick="nav('mock')">去摸底</button></div></div>${aiCard()}${syncCard()}${backupCard()}`;
     return;
   }
   // 單元統計
@@ -2055,15 +2057,15 @@ function syncCard() {
     <p class="dim">登入後：做題紀錄跨裝置自動同步、手寫筆跡永久保存（換裝置、清瀏覽器都不怕）。第一次用「註冊」。</p>
     <input id="sy-email" class="ans-input" autocomplete="username" placeholder="email">
     <input id="sy-pass" class="ans-input" type="password" autocomplete="current-password" placeholder="密碼（至少 6 碼）">
-    <div style="margin-top:8px">
-      <button class="btn primary" onclick="syncLogin(false)">登入</button>
+    <div class="actr">
       <button class="btn" onclick="syncLogin(true)">註冊</button>
+      <button class="btn primary" onclick="syncLogin(false)">登入</button>
     </div>
     ${syncState.msg ? `<p class="dim">${syncState.msg}</p>` : ''}</div>`;
   return `<div class="card"><h2>☁️ 雲端同步 <span class="okc">已登入</span></h2>
     <p class="dim">${syncState.user.email}｜${syncState.msg || '自動同步中：每次做完題幾秒內上傳'}</p>
-    <button class="btn" onclick="syncPushNow()">立即同步</button>
-    <button class="btn" onclick="syncLogout()">登出</button></div>`;
+    <div class="actr"><button class="btn" onclick="syncLogout()">登出</button>
+    <button class="btn" onclick="syncPushNow()">立即同步</button></div></div>`;
 }
 
 /* ═══════════ 啟動 ═══════════ */
