@@ -178,3 +178,10 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 #syncpill.warn { color: var(--bad); border-color: var(--bad); animation: blink 1.6s infinite; }
 #syncpill.off { color: var(--dim); border-color: var(--dim); }
 @media (max-width: 600px) { #syncpill { top: auto; bottom: 10px; right: 10px; } }
+
+/* 🧑‍🏫 老師蒸餾 */
+.teach { background: rgba(79, 209, 197, 0.08); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 10px 14px; margin: 10px 0; }
+.teach-tip { color: var(--accent); font-size: 0.95em; }
+.teach-profile .cp { display: inline-block; background: var(--panel2); border: 1px solid var(--border); border-radius: 14px; padding: 3px 10px; margin: 3px 4px 3px 0; font-size: 13px; }
+.teach-profile details { margin: 8px 0; }
+.teach-profile summary { cursor: pointer; color: var(--accent); font-weight: 600; }

@@ -475,6 +475,30 @@ function gradeOf(acc) {
   return GRADE_TABLE.find((g) => acc >= g.min).label;
 }
 function bankById(id) { return BANK.find((q) => q.id === id); }
+function teachProfileCard() {
+  const p = S.teachProfile;
+  if (!p) return '';
+  const nEnrich = S.teach ? Object.keys(S.teach).length : 0;
+  return `<div class="card teach-profile">
+    <h2>🧑‍🏫 老師的教法（從 42 堂課蒸餾）</h2>
+    <p class="dim">你買了整套課卻沒空上——系統把老師怎麼教吸收進來了。刷題時對得上的題（共 ${nEnrich} 題）會顯示「老師這樣教」；概念洞就用他的方法補。</p>
+    <details><summary>他鋪陳觀念的固定順序</summary><p>${p.sequence || ''}</p></details>
+    <details><summary>他反覆強調什麼</summary><p>${p.emphasis || ''}</p></details>
+    <details><summary>語氣與比喻風格</summary><p>${p.voice || ''}</p></details>
+    <details><summary>各單元他特別強調的重點</summary><p style="white-space:pre-wrap">${p.perUnitFocus || ''}</p></details>
+    <p style="margin-top:8px"><b>標誌性口訣：</b></p>
+    <div>${(p.catchphrases || []).map((c) => `<span class="cp">${c}</span>`).join('')}</div>
+  </div>`;
+}
+function teachBlock(qid) {
+  const t = S.teach && S.teach[qid];
+  if (!t || !t.sol) return '';
+  return `<div class="teach">
+    <p><b>🧑‍🏫 老師這樣教：</b>${t.sol}</p>
+    ${t.tip ? `<p class="teach-tip">🔑 ${t.tip}</p>` : ''}
+    ${t.ba ? `<p class="dim">（黑板答案：${t.ba}）</p>` : ''}
+  </div>`;
+}
 
 /* ═══════════ 計時器 ═══════════ */
 let ticker = null;
@@ -563,6 +587,7 @@ function renderHome() {
     <p>距離 116 學測（2027/1/22）還有 <b class="accent">${days} 天</b>｜目標：9 → 13 級分｜台大獸醫</p>
   </div>
   ${status}
+  ${teachProfileCard()}
   <div class="card">
     <h2>你的問題在哪（診斷書）</h2>
     <p>「我會，但寫不完」＋ 兩次都停在 9 級分 ＋ 公式都背了 —— 這個組合指向的<b>不是知識缺口，是輸出速度與考試工程</b>：</p>
@@ -1058,6 +1083,7 @@ function qSubmit(optIdx) {
          ${overtime ? '<span class="warnc"><b>⚠ 對但超時 1.5 倍——考場上這題等於沒拿到</b></span>' : ''}</p>
       <p><b>詳解：</b>${q.sol}</p>
       ${q.tip ? `<p class="tip">💡 <b>快解：</b>${q.tip}</p>` : ''}
+      ${teachBlock(q.id)}
       ${inkSummary(qsess.proc)}
       ${qsess.proc && qsess.proc.n ? `<button class="btn sm" onclick="inkReplay('${q.id}', ${qsess.t0})">▶ 回放解題過程</button>` : ''}
     </div>`;
