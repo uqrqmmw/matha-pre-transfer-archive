@@ -2408,6 +2408,10 @@ function qGrade(optIdx) {
   qsess.yourAns = '（手寫作答）';
   // 整卷截圖：題卡上的筆跡＋計算區筆跡拼成一張（跟題本一樣整面都能寫）
   const calcB64 = inkCaptureFull(q.id);
+  const _st = sessionInk[q.id] || {};
+  const _ns = (_st.s || []).filter((s) => !s.dead && !s.arch).length;
+  const _nq = (_st.q || []).filter((s) => !s.dead && !s.arch).length;
+  qsess.diag = `診斷：key=${aiKey() ? '有' : '無'}｜筆跡 計算區${_ns}＋題卡${_nq} 筆｜截圖=${calcB64 ? '成功' : '空'}`;
   if (aiKey() && calcB64) {
     $('#qfb').innerHTML = '<p class="dim">🤖 AI 批改中…（認字、對答案、檢查過程哪裡開始錯）</p>';
     const sess = qsess; // 綁定本題：離開或換題後，遲到的回應直接丟棄
@@ -2434,7 +2438,8 @@ function qShowJudge(hasAI) {
       ? '<p class="warnc">⚠ 這台裝置還沒拿到 AI key——如果你已在別台填過，重新整理此頁同步後就會自動批改。</p>' : '';
     const noInkHint = qsess.noInk
       ? '<p class="warnc">⚠ AI 沒批改：抓不到手寫筆跡——先寫再按「算完了」。</p>' : '';
-    $('#qfb').innerHTML = `${qsess.aiErr ? `<p class="warnc">⚠ AI 批改失敗：${escH(qsess.aiErr)}——先自評，key 問題到「📊 數據」頁按「測試連線」檢查。</p>` : noInkHint || noKeyHint}${peek}
+    const diag = qsess.diag ? `<p class="dim" style="font-size:11px">${qsess.diag}</p>` : '';
+    $('#qfb').innerHTML = `${qsess.aiErr ? `<p class="warnc">⚠ AI 批改失敗：${escH(qsess.aiErr)}——先自評，key 問題到「📊 數據」頁按「測試連線」檢查。</p>` : noInkHint || noKeyHint}${diag}${peek}
       <p><b>答對了嗎？</b><span class="dim">（等價形式都算對）</span></p>
       <div class="actr"><button class="btn err" onclick="qResolve(false)">✗ 我錯了</button>
       <button class="btn primary" onclick="qResolve(true)">✓ 我對了</button></div>`;
