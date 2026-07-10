@@ -2,6 +2,8 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
+const APP_VER = '0711b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
 let S = load();
@@ -2343,7 +2345,7 @@ function renderQuestion(q, cfg) {
   app().innerHTML = `
     <div class="session-head">
       <span>${cfg.head}｜${TOPICS[q.topic]}${q.src ? `｜<b class="accent">${q.src}</b>` : ''}｜${'★'.repeat(q.diff)}${'☆'.repeat(3 - q.diff)}${timerOn() ? `｜目標 ${fmtSec(target)}` : ''}</span>
-      <span class="shr">${timerOn() ? '<span id="qtimer" class="timer">00:00</span>' : ''}
+      <span class="shr"><span class="dim" style="font-size:11px">${APP_VER}</span>${timerOn() ? '<span id="qtimer" class="timer">00:00</span>' : ''}
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
     ${timerOn() ? '<div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>' : ''}
@@ -2411,7 +2413,7 @@ function qGrade(optIdx) {
   const _st = sessionInk[q.id] || {};
   const _ns = (_st.s || []).filter((s) => !s.dead && !s.arch).length;
   const _nq = (_st.q || []).filter((s) => !s.dead && !s.arch).length;
-  qsess.diag = `診斷：key=${aiKey() ? '有' : '無'}｜筆跡 計算區${_ns}＋題卡${_nq} 筆｜截圖=${calcB64 ? '成功' : '空'}`;
+  qsess.diag = `診斷 v${APP_VER}：key=${aiKey() ? '有' : '無'}｜筆跡 計算區${_ns}＋題卡${_nq} 筆｜截圖=${calcB64 ? '成功' : '空'}`;
   if (aiKey() && calcB64) {
     $('#qfb').innerHTML = '<p class="dim">🤖 AI 批改中…（認字、對答案、檢查過程哪裡開始錯）</p>';
     const sess = qsess; // 綁定本題：離開或換題後，遲到的回應直接丟棄
