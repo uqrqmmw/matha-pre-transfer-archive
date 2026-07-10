@@ -931,9 +931,9 @@ function teachBlock(qid) {
   const t = S.teach && S.teach[qid];
   if (!t || !t.sol) return '';
   return `<div class="teach">
-    <p><b>🧑‍🏫 老師這樣教：</b>${t.sol}</p>
-    ${t.tip ? `<p class="teach-tip">🔑 ${t.tip}</p>` : ''}
-    ${t.ba ? `<p class="dim">（黑板答案：${t.ba}）</p>` : ''}
+    <p><b>🧑‍🏫 老師這樣教：</b>${rtTxt(t.sol)}</p>
+    ${t.tip ? `<p class="teach-tip">🔑 ${rtTxt(t.tip)}</p>` : ''}
+    ${t.ba ? `<p class="dim">（黑板答案：${rtTxt(t.ba)}）</p>` : ''}
   </div>`;
 }
 
@@ -2425,12 +2425,12 @@ function qResolve(ok) {
   const solBlock = `
     <div class="sol">
       <p>${ok ? '<span class="ok">✔ 答對</span>' : `<span class="bad">✘ 答錯</span>（你的答案：${escH(qsess.yourAns)}）`}
-         ｜正解：<b>${correctTxt}</b>｜耗時 ${fmtSec(ms)}（目標 ${fmtSec(target)}）
+         ｜正解：<b>${q.type === 'fill' ? mDispOpt(String(correctTxt)) : correctTxt}</b>｜耗時 ${fmtSec(ms)}（目標 ${fmtSec(target)}）
          ${overtime ? '<span class="warnc"><b>⚠ 對但超時 1.5 倍——考場上這題等於沒拿到</b></span>' : ''}</p>
       ${ok ? praiseFor(q, ok, ms, target) : ''}
       ${qsess.ai ? aiFeedbackHTML(qsess.ai) : ''}
-      <p><b>詳解：</b>${q.sol}</p>
-      ${q.tip ? `<p class="tip">💡 <b>快解：</b>${q.tip}</p>` : ''}
+      <p><b>詳解：</b>${rtTxt(q.sol)}</p>
+      ${q.tip ? `<p class="tip">💡 <b>快解：</b>${rtTxt(q.tip)}</p>` : ''}
       ${teachBlock(q.id)}
       <div id="ai-proc"></div>
       <details class="mlib-fold" ontoggle="if(this.open){const b=this.querySelector('#mlib-box');if(b&&!b.innerHTML)showMethods('${q.topic}',true)}"><summary class="dim">🧑‍🏫 老師方法庫：${TOPICS[q.topic]}（點開看）</summary><div id="mlib-box"></div></details>
@@ -2913,10 +2913,47 @@ function renderStats() {
     <div class="card"><h2>錯因分布 → 對症處方</h2>${errBars}${advice ? `<ul>${advice}</ul>` : ''}</div>
     ${procCard}
     ${drillRows ? `<div class="card"><h2>速度特訓進度</h2><table class="tbl"><tr><th>項目</th><th>輪數</th><th>中位數變化</th><th>狀態</th></tr>${drillRows}</table></div>` : ''}
-    ${mockRows ? `<div class="card"><h2>模擬成績走勢</h2><table class="tbl"><tr><th>日期</th><th>答對</th><th>答對率</th><th>體感級分</th></tr>${mockRows}</table></div>` : ''}
+    ${mockRows ? `<div class="card"><h2>系統模擬走勢</h2><table class="tbl"><tr><th>日期</th><th>答對</th><th>答對率</th><th>體感級分</th></tr>${mockRows}</table></div>` : ''}
+    ${extMockCard()}
     ${aiCard()}
     ${syncCard()}
     ${backupCard()}`;
+}
+/* 補習班模考成績登錄（4 次真實模考；跟系統模擬分開走勢） */
+function extMockCard() {
+  const list = (S.extMocks || []).slice().sort((a, b) => (a.d < b.d ? 1 : -1));
+  const rows = list.map((m, i) =>
+    `<tr><td>${m.d}</td><td>${m.name || '模考'}</td><td>${m.score}/${m.total}（${Math.round(100 * m.score / m.total)}%）</td>
+      <td>${gradeOf(m.score / m.total)}</td><td>${escH(m.note || '')}</td>
+      <td><button class="btn sm err" onclick="delExtMock(${i})">刪</button></td></tr>`).join('');
+  return `<div class="card"><h2>🏫 補習班模考</h2>
+    <div class="chips" style="align-items:flex-end">
+      <label class="chip col">名稱<input id="em-name" class="ans-input sm" placeholder="第一次模考"></label>
+      <label class="chip col">得分<input id="em-score" class="ans-input sm" inputmode="decimal" placeholder="76"></label>
+      <label class="chip col">滿分<input id="em-total" class="ans-input sm" inputmode="decimal" value="100"></label>
+      <label class="chip col">日期<input id="em-date" class="ans-input sm" type="date" value="${today()}"></label>
+    </div>
+    <label class="chip col" style="display:block">備註<input id="em-note" class="ans-input" placeholder="錯在哪、考場狀況…（選填）"></label>
+    <div class="actr"><button class="btn primary" onclick="addExtMock()">登錄成績</button></div>
+    ${rows ? `<table class="tbl"><tr><th>日期</th><th>名稱</th><th>得分</th><th>換算</th><th>備註</th><th></th></tr>${rows}</table>` : '<p class="dim">還沒登錄。四次補習班模考的成績記這裡，跟系統模擬分開看走勢。</p>'}</div>`;
+}
+function addExtMock() {
+  const score = parseFloat(($('#em-score') || {}).value);
+  const total = parseFloat(($('#em-total') || {}).value) || 100;
+  const d = ($('#em-date') || {}).value || today();
+  if (isNaN(score) || score < 0 || score > total) { alert('請填有效的得分（0～滿分）'); return; }
+  S.extMocks = S.extMocks || [];
+  S.extMocks.push({ d, name: ($('#em-name') || {}).value.trim() || '模考', score, total, note: ($('#em-note') || {}).value.trim(), ts: Date.now() });
+  save();
+  renderStats();
+}
+function delExtMock(i) {
+  const list = (S.extMocks || []).slice().sort((a, b) => (a.d < b.d ? 1 : -1));
+  const target = list[i];
+  if (!target) return;
+  S.extMocks = (S.extMocks || []).filter((m) => m !== target);
+  save();
+  renderStats();
 }
 
 /* ═══════════ 作戰計畫 ═══════════ */
@@ -3100,9 +3137,12 @@ function mergeState(a, b) {
   const mset = new Set((a.mocks || []).map((m) => JSON.stringify(m)));
   const mocks = [...(a.mocks || [])];
   for (const m of b.mocks || []) if (!mset.has(JSON.stringify(m))) mocks.push(m);
+  const emset = new Set((a.extMocks || []).map((m) => JSON.stringify(m)));
+  const extMocks = [...(a.extMocks || [])];
+  for (const m of b.extMocks || []) if (!emset.has(JSON.stringify(m))) extMocks.push(m);
   const daily = { ...(b.daily || {}) };
   for (const d of Object.keys(a.daily || {})) daily[d] = { ...(daily[d] || {}), ...a.daily[d] };
-  const merged = { ...b, ...a, attempts, wrong, drills, mocks, daily, extbank };
+  const merged = { ...b, ...a, attempts, wrong, drills, mocks, extMocks, daily, extbank };
   // AI key：取「最後修改時間較新」的一方（避免舊裝置的舊 key 蓋掉新換的 key）
   if ((b.aikeyTs || 0) > (a.aikeyTs || 0)) { merged.aikey = b.aikey; merged.aikeyTs = b.aikeyTs; }
   // 手機專區數據：days 逐日取較大者、hist 聯集、卡片記憶取看過較多的一方
