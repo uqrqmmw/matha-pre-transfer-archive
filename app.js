@@ -941,6 +941,8 @@ function teachBlock(qid) {
 let ticker = null;
 function startTicker(fn) { stopTicker(); ticker = setInterval(fn, 250); }
 function stopTicker() { if (ticker) { clearInterval(ticker); ticker = null; } }
+/* 計時器可見性：預設隱藏（初期以「寫完」為主，時間照樣幕後記錄）。開關在數據頁。 */
+function timerOn() { return S.hideTimer === false; }
 
 /* ═══════════ 紀錄 ═══════════ */
 function recordAttempt(q, ok, ms, err, mode, proc) {
@@ -1767,7 +1769,7 @@ function phoneQuizNext() {
   phone.tapped = false;
   app().innerHTML = `
     <div class="session-head"><span>⚡ 心算快答｜第 ${phone.i + 1} / ${phone.items.length} 題</span>
-      <span class="shr"><span id="ptimer" class="timer">0.0s</span>
+      <span class="shr">${timerOn() ? '<span id="ptimer" class="timer">0.0s</span>' : ''}
       <button class="btn sm xbtn" onclick="exitFlow()">✕</button></span></div>
     <div class="card qcard"><div class="qtext big">${rtTxt(it.q)}</div>
       <div class="pbtns">${it.opts.map((o, i) => `<button class="btn pbtn" onclick="phoneTap(${i})">${o}</button>`).join('')}</div>
@@ -1776,7 +1778,7 @@ function phoneQuizNext() {
     <p class="dim" style="text-align:center">${it.src}</p>`;
   sessionChrome(true);
   inkStart(`phone-q${phone.i + 1}`, phone.t0);
-  startTicker(() => { const t = $('#ptimer'); if (t) t.textContent = ((Date.now() - phone.t0) / 1000).toFixed(1) + 's'; });
+  if (timerOn()) startTicker(() => { const t = $('#ptimer'); if (t) t.textContent = ((Date.now() - phone.t0) / 1000).toFixed(1) + 's'; });
 }
 function phoneTap(idx) {
   if (!phone || phone.tapped) return;
@@ -1998,7 +2000,7 @@ function drillNext() {
   app().innerHTML = `
     <div class="session-head">
       <span>${d.name}｜第 ${drill.i + 1} / 12 題</span>
-      <span class="shr"><span id="dtimer" class="timer">0.0s</span>
+      <span class="shr">${timerOn() ? '<span id="dtimer" class="timer">0.0s</span>' : ''}
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
     <div class="card qcard"><div class="qwrap"><div class="qtext big">${rtTxt(it.q)}</div></div>
@@ -2009,7 +2011,7 @@ function drillNext() {
     ${inkHTML({ small: true })}`;
   sessionChrome(true);
   inkStart(drill.qid, drill.t0);
-  startTicker(() => {
+  if (timerOn()) startTicker(() => {
     const e = (Date.now() - drill.t0) / 1000;
     const t = $('#dtimer');
     if (t) t.textContent = e.toFixed(1) + 's';
@@ -2264,13 +2266,13 @@ function pracDone() {
   const all = prac.results;
   const r = all.filter((x) => !x.excluded);
   const okN = r.filter((x) => x.ok).length;
-  const slowOk = r.filter((x) => x.ok && x.ms > x.target * 1.5).length;
+  const slowOk = timerOn() ? r.filter((x) => x.ok && x.ms > x.target * 1.5).length : 0;
   const hardWins = all.filter((x, i) => !x.excluded && x.ok && prac.queue[i].diff === 3).length;
   const rows = all.map((x, i) => {
     const q = prac.queue[i];
-    if (x.excluded) return `<tr><td>${TOPICS[q.topic]}</td><td colspan="3" class="dim">（中途離開，未列入紀錄）</td></tr>`;
+    if (x.excluded) return `<tr><td>${TOPICS[q.topic]}</td><td colspan="${timerOn() ? 3 : 2}" class="dim">（中途離開，未列入紀錄）</td></tr>`;
     return `<tr><td>${TOPICS[q.topic]}</td><td>${x.ok ? '✔' : '✘'}</td>
-      <td class="${x.ms > x.target ? 'badc' : 'okc'}">${fmtSec(x.ms)} / ${fmtSec(x.target)}</td>
+      ${timerOn() ? `<td class="${x.ms > x.target ? 'badc' : 'okc'}">${fmtSec(x.ms)} / ${fmtSec(x.target)}</td>` : ''}
       <td>${x.err || '—'}</td></tr>`;
   }).join('');
   const cheer = r.length && okN === r.length ? '整輪全對——這種穩定度就是考場要的！'
@@ -2282,7 +2284,7 @@ function pracDone() {
     <div class="card">
       <p class="big">答對 <b>${okN} / ${r.length}</b>${slowOk ? `，其中 <b class="warnc">${slowOk} 題「對但超時」</b>（考場上等於失分，已加入錯題本重練速度）` : ''}</p>
       ${cheer ? `<p class="praise">🎉 ${cheer}</p>` : ''}
-      <table class="tbl"><tr><th>單元</th><th>結果</th><th>耗時/目標</th><th>錯因</th></tr>${rows}</table>
+      <table class="tbl"><tr><th>單元</th><th>結果</th>${timerOn() ? '<th>耗時/目標</th>' : ''}<th>錯因</th></tr>${rows}</table>
       <div class="actr"><button class="btn" onclick="nav('stats')">看數據</button>
       <button class="btn primary" onclick="nav('prac')">再刷一輪</button></div>
     </div>`;
@@ -2333,16 +2335,17 @@ function renderQuestion(q, cfg) {
   }
   app().innerHTML = `
     <div class="session-head">
-      <span>${cfg.head}｜${TOPICS[q.topic]}${q.src ? `｜<b class="accent">${q.src}</b>` : ''}｜${'★'.repeat(q.diff)}${'☆'.repeat(3 - q.diff)}｜目標 ${fmtSec(target)}</span>
-      <span class="shr"><span id="qtimer" class="timer">00:00</span>
+      <span>${cfg.head}｜${TOPICS[q.topic]}${q.src ? `｜<b class="accent">${q.src}</b>` : ''}｜${'★'.repeat(q.diff)}${'☆'.repeat(3 - q.diff)}${timerOn() ? `｜目標 ${fmtSec(target)}` : ''}</span>
+      <span class="shr">${timerOn() ? '<span id="qtimer" class="timer">00:00</span>' : ''}
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
-    <div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>
+    ${timerOn() ? '<div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>' : ''}
     <div id="q-flash" class="ink-flash" style="display:none"></div>
     ${bkCard(q, cfg.head, 'qSubmit', actions)}
     ${inkHTML()}`;
   sessionChrome(true);
   inkStart(q.id, qsess.t0);
+  if (!timerOn()) return; // 計時器隱藏：不跑碼表、不出時間警示（時間仍在 qSubmit 幕後量測）
   startTicker(() => {
     const e = Date.now() - qsess.t0;
     const t = $('#qtimer'); const f = $('#tbfill');
@@ -2434,7 +2437,7 @@ function qResolve(ok) {
   const { q } = qsess;
   const ms = qsess.ms;
   const target = qTarget(q);
-  const overtime = ok && ms > target * 1.5;
+  const overtime = timerOn() && ok && ms > target * 1.5;
   const correctTxt = q.type === 'fill' ? q.ans[0] : q.ans.map((a) => `(${a + 1})`).join('');
   // 筆跡一律上傳（珍貴分析資料）；被排除的標記 excluded，統計時可濾掉
   syncInk(q.id, qsess.t0, Object.assign(
@@ -2443,7 +2446,7 @@ function qResolve(ok) {
   const solBlock = `
     <div class="sol">
       <p>${ok ? '<span class="ok">✔ 答對</span>' : `<span class="bad">✘ 答錯</span>（你的答案：${escH(qsess.yourAns)}）`}
-         ｜正解：<b>${q.type === 'fill' ? mDispOpt(String(correctTxt)) : correctTxt}</b>｜耗時 ${fmtSec(ms)}（目標 ${fmtSec(target)}）
+         ｜正解：<b>${q.type === 'fill' ? mDispOpt(String(correctTxt)) : correctTxt}</b>${timerOn() ? `｜耗時 ${fmtSec(ms)}（目標 ${fmtSec(target)}）` : ''}
          ${overtime ? '<span class="warnc"><b>⚠ 對但超時 1.5 倍——考場上這題等於沒拿到</b></span>' : ''}</p>
       ${ok ? praiseFor(q, ok, ms, target) : ''}
       ${qsess.ai ? aiFeedbackHTML(qsess.ai) : ''}
@@ -2852,7 +2855,7 @@ function reviewNext() {
 function renderStats() {
   if (!S.attempts.length) {
     app().innerHTML = `<h1>📊 數據</h1>${dailyCard()}<div class="card"><p>還沒有做題數據。</p>
-      <div class="actr"><button class="btn primary" onclick="nav('mock')">去摸底</button></div></div>${aiCard()}${syncCard()}${backupCard()}`;
+      <div class="actr"><button class="btn primary" onclick="nav('mock')">去摸底</button></div></div>${timerSettingCard()}${aiCard()}${syncCard()}${backupCard()}`;
     return;
   }
   // 單元統計
@@ -2926,10 +2929,21 @@ function renderStats() {
     ${procCard}
     ${drillRows ? `<div class="card"><h2>速度特訓進度</h2><table class="tbl"><tr><th>項目</th><th>輪數</th><th>中位數變化</th><th>狀態</th></tr>${drillRows}</table></div>` : ''}
     ${mockRows ? `<div class="card"><h2>系統模擬走勢</h2><table class="tbl"><tr><th>日期</th><th>答對</th><th>答對率</th><th>體感級分</th></tr>${mockRows}</table></div>` : ''}
+    ${timerSettingCard()}
     ${extMockCard()}
     ${aiCard()}
     ${syncCard()}
     ${backupCard()}`;
+}
+/* 計時器顯示開關（預設關：初期以寫完為主；時間照樣幕後記錄） */
+function setTimerVis(on) { S.hideTimer = on ? false : true; save(); renderStats(); }
+function timerSettingCard() {
+  return `<div class="card"><h2>⏱️ 計時器</h2>
+    <label class="chip"><input type="checkbox" ${timerOn() ? 'checked' : ''} onchange="setTimerVis(this.checked)"> 作答時顯示計時器</label>
+    <p class="dim">${timerOn()
+      ? '目前顯示中：作答畫面有碼表/進度條，超時的題會提醒。'
+      : '目前隱藏中：作答不顯示任何碼表、進度條，也不因超時把答對的題丟進錯題本——先專心把題目寫完。<b>時間仍在幕後完整記錄</b>，之後想練速度再打開。'}
+    （模擬實戰維持考場計時不受此設定影響。）</p></div>`;
 }
 /* 補習班模考成績登錄（4 次真實模考；跟系統模擬分開走勢） */
 function extMockCard() {
