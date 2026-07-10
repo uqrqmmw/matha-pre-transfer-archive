@@ -794,12 +794,12 @@ function mlibCard() {
       <div class="chips r">${Object.keys(TOPICS).map((k) => `<button class="btn sm" onclick="showMethods('${k}')">${TOPICS[k]}</button>`).join('')}</div>
       <div id="mlib-box"></div></div>`;
 }
-/* 根號顯示：用乾淨的 √ 緊貼被開方數（單一根式課本就這樣印，不加浮空蓋線）。
-   只確保 √ 與後面的數/式不被斷行拆開；分組用括號 √(...) 本身已清楚。 */
+/* 根號 → KaTeX 正式根式（√ 上有橫線蓋住被開方數）。殘留的 √ 原字轉成 \(\sqrt{}\) 島。
+   已是 \sqrt 的（工作流轉好的內容）不含 √ 字元，不會被重複處理。 */
 function rtTxt(s) {
   return String(s)
-    .replace(/√\(([^()<>]+)\)/g, '<span class="rt">√($1)</span>')
-    .replace(/√(\d+(?:\.\d+)?)/g, '<span class="rt">√$1</span>');
+    .replace(/√\(([^()<>]+)\)/g, '\\(\\sqrt{$1}\\)')
+    .replace(/(\d+)?√(\d+(?:\.\d+)?)/g, (m, co, rad) => '\\(' + (co || '') + '\\sqrt{' + rad + '}\\)');
 }
 /* 方法庫等純文字內的分數轉直式＋根號蓋線（保守：只轉 a/b、√a/b 形式） */
 function mathTxt(s) {
@@ -1438,7 +1438,7 @@ const DRILLS = {
       const correct = TRI_VAL[c.fn][c.a];
       const pool = [...new Set(Object.values(TRI_VAL[c.fn]))].filter((v) => v !== correct);
       const opts = shuffle([correct, ...shuffle(pool).slice(0, 3)]);
-      return { q: `${c.fn} ${c.a}° = ?`, kind: 'opts', opts: opts.map(mDispOpt), ans: opts.indexOf(correct), fk: c.key };
+      return { q: `${c.fn} ${c.a}° = ?`, kind: 'opts', opts, ans: opts.indexOf(correct), fk: c.key };
     } },
   logexp: { name: '指對數速算', desc: 'log 與分數指數', target: 9,
     gen() {
@@ -1553,7 +1553,7 @@ const DRILLS = {
         const cand = [right, `${tt}/√${b}`, `${tt * b}√${b}`, `${tt + 1}√${b}`, `${tt + 2}√${b}`, `${tt * b}/√${b}`];
         const opts = shuffle([...new Set(cand)].slice(0, 4));
         const ai = opts.indexOf(right);
-        return { q: `有理化：${fracH(tt * b, '√' + b)} = ?`, opts: opts.map(mDispOpt), ans: ai };
+        return { q: `有理化：${fracH(tt * b, '√' + b)} = ?`, opts, ans: ai };
       }
       // 距離計算收尾：√(x²+y²)
       const cases = [
@@ -1595,19 +1595,24 @@ const DRILLS = {
       return { q: `二階行列式 ${m2H(2, 3, 1, 4, 1)} = ?`, kind: 'num', ans: '5' };
     } },
 };
-/* 2×2 直式呈現：det=true 用行列式直線，否則用矩陣方括號（CSS .m2 畫框） */
-function m2H(a, b, c, d, det) {
-  return `<span class="m2${det ? ' det' : ''}"><span>${a}</span><span>${b}</span><span>${c}</span><span>${d}</span></span>`;
+/* ═══ KaTeX 數學排版 helper（全部產生 \(…\) 島，交給 KaTeX 排成二維正式數學） ═══ */
+function T(body) { return '\\(' + body + '\\)'; }
+/* 純值字串（√k、a/b、數字、座標）→ LaTeX 內文（無界定符） */
+function texBody(s) {
+  s = String(s).trim();
+  s = s.replace(/√\(([^()]*)\)/g, '\\sqrt{$1}').replace(/√(\d+)/g, '\\sqrt{$1}');
+  s = s.replace(/≤/g, '\\le ').replace(/≥/g, '\\ge ').replace(/≠/g, '\\ne ').replace(/×/g, '\\times ').replace(/·/g, '\\cdot ').replace(/±/g, '\\pm ');
+  const m = s.match(/^(-?[^\/,]+)\/([^\/,]+)$/); // 整串就是一個分數（無逗號）
+  if (m) return '\\frac{' + m[1] + '}{' + m[2] + '}';
+  return s;
 }
-/* 直式數學排版（顯示用；答案輸入格式維持 a/b 不變） */
-function fracH(n, d) { return `<span class="vfrac"><span class="vn">${n}</span><span class="vd">${d}</span></span>`; }
-function cpH(L, n, k) { return `<span class="cpk">${L}<span class="ss"><span>${n}</span><span>${k}</span></span></span>`; }
-/* 選項/正解顯示轉直式：只轉「整串就是一個分數」的安全情形，如 1/2、-√3/2、11/72、3/√5 */
-function mDispOpt(s) {
-  if (typeof s !== 'string') return s;
-  const m = s.match(/^(-?(?:\d+)?(?:√\d+)?)\/((?:\d+)?(?:√\d+)?)$/);
-  return m && m[1] && m[2] ? `<span class="vfrac"><span class="vn">${rtTxt(m[1])}</span><span class="vd">${rtTxt(m[2])}</span></span>` : rtTxt(s);
-}
+function texVal(s) { return T(texBody(s)); }
+/* 2×2：det→行列式直線 vmatrix，否則矩陣方括號 bmatrix */
+function m2H(a, b, c, d, det) { const L = det ? 'vmatrix' : 'bmatrix'; return T('\\begin{' + L + '}' + a + ' & ' + b + ' \\\\ ' + c + ' & ' + d + '\\end{' + L + '}'); }
+function fracH(n, d) { return T('\\frac{' + texBody(String(n)) + '}{' + texBody(String(d)) + '}'); }
+function cpH(L, n, k) { return T(L === 'C' ? '\\binom{' + n + '}{' + k + '}' : '{}^{' + n + '}\\!P_{' + k + '}'); }
+/* 選項/正解字串 → LaTeX 島（給程式產生的選項與答案；DB 內容已是 LaTeX，不要再過這裡） */
+function mDispOpt(s) { return typeof s === 'string' ? texVal(s) : s; }
 
 /* ═══════════ 📱 手機專區 ═══════════
    零碎時間、單手、全按鈕作答（不手寫不打字）。內容＝學測數A該背/該心算的：
@@ -1773,7 +1778,7 @@ function phoneQuizNext() {
       <span class="shr">${timerOn() ? '<span id="ptimer" class="timer">0.0s</span>' : ''}
       <button class="btn sm xbtn" onclick="exitFlow()">✕</button></span></div>
     <div class="card qcard"><div class="qtext big">${rtTxt(it.q)}</div>
-      <div class="pbtns">${it.opts.map((o, i) => `<button class="btn pbtn" onclick="phoneTap(${i})">${o}</button>`).join('')}</div>
+      <div class="pbtns">${it.opts.map((o, i) => `<button class="btn pbtn" onclick="phoneTap(${i})">${mDispOpt(o)}</button>`).join('')}</div>
       <div id="pfb"></div></div>
     ${inkHTML({ phone: true })}
     <p class="dim" style="text-align:center">${it.src}</p>`;
@@ -1997,7 +2002,7 @@ function drillNext() {
        <div class="actr"><button class="btn primary big" onclick="drillSubmit()">✅ 算完了</button></div>
        <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
        <input id="din" class="ans-input" inputmode="text" autocomplete="off" placeholder="答案" onkeydown="if(event.key==='Enter')drillSubmit()"></details>`
-    : it.opts.map((o, idx) => `<button class="btn opt" onclick="drillSubmit(${idx})">${o}</button>`).join('');
+    : it.opts.map((o, idx) => `<button class="btn opt" onclick="drillSubmit(${idx})">${mDispOpt(o)}</button>`).join('');
   app().innerHTML = `
     <div class="session-head">
       <span>${d.name}｜第 ${drill.i + 1} / 12 題</span>
@@ -2115,9 +2120,9 @@ function drillDone() {
   const rows = drill.results.map((r, i) => {
     const slow = r.ok && r.ms > med * 2 && r.ms > 3000;
     return `<tr>
-      <td>${i + 1}</td><td>${r.q}</td>
+      <td>${i + 1}</td><td>${rtTxt(r.q)}</td>
       <td>${r.ok ? '<span class="okc">✔</span>' : `<span class="badc">✘ ${escH(r.given || '（空白）')}</span>`}</td>
-      <td><b>${r.ans}</b></td>
+      <td><b>${mDispOpt(String(r.ans))}</b></td>
       <td class="${slow ? 'warnc' : ''}" style="font-variant-numeric:tabular-nums">${(r.ms / 1000).toFixed(1)}s${slow ? ' ⚠' : ''}</td></tr>`;
   }).join('');
   app().innerHTML = `
@@ -2135,10 +2140,10 @@ function drillDone() {
       ${hist.length > 1 ? `<p class="dim">近 ${Math.min(6, hist.length)} 輪走勢：${trend}</p>` : ''}
     </div>
     ${wrongs.length ? `<div class="card warn"><h2>✘ 錯的 ${wrongs.length} 題——花 30 秒看懂它們再走</h2>
-      <ul>${wrongs.map((r) => `<li>${r.q}　你答 <span class="badc">${escH(r.given || '（空白）')}</span>，正解 <b>${r.ans}</b>（${(r.ms / 1000).toFixed(1)}s${r.ms < med ? '——比你的中位數還快，十之八九是搶快' : ''}）</li>`).join('')}</ul></div>` : ''}
+      <ul>${wrongs.map((r) => `<li>${rtTxt(r.q)}　你答 <span class="badc">${escH(r.given || '（空白）')}</span>，正解 <b>${mDispOpt(String(r.ans))}</b>（${(r.ms / 1000).toFixed(1)}s${r.ms < med ? '——比你的中位數還快，十之八九是搶快' : ''}）</li>`).join('')}</ul></div>` : ''}
     ${slows.length ? `<div class="card"><h2>⚠ 卡頓題 ${slows.length} 題（吃掉全輪 ${slowShare}% 的時間）</h2>
       <p class="dim">耗時超過自己中位數兩倍的題——這幾種數字組合就是你「還沒自動化」的精確位置，下一輪特別注意它們有沒有變快：</p>
-      <ul>${slows.map((r) => `<li>${r.q}　<b class="warnc">${(r.ms / 1000).toFixed(1)}s</b></li>`).join('')}</ul></div>` : ''}
+      <ul>${slows.map((r) => `<li>${rtTxt(r.q)}　<b class="warnc">${(r.ms / 1000).toFixed(1)}s</b></li>`).join('')}</ul></div>` : ''}
     <div class="card"><h2>逐題明細</h2>
       <div style="overflow-x:auto"><table class="tbl"><tr><th>#</th><th>題目</th><th>作答</th><th>正解</th><th>耗時</th></tr>${rows}</table></div>
       <div class="actr"><button class="btn" onclick="nav('drill')">回特訓選單</button>
@@ -2299,11 +2304,11 @@ function bkNum(head) { const m = String(head || '').match(/(\d+)/); return m ? m
 function bkOpts(q, submitFn) {
   if (q.type === 'single') {
     return `<div class="bk-opts">${q.opts.map((o, i) =>
-      `<div class="bk-opt" onclick="${submitFn}(${i})"><span class="bk-op">(${i + 1})</span><span>${mDispOpt(o)}</span></div>`).join('')}</div>`;
+      `<div class="bk-opt" onclick="${submitFn}(${i})"><span class="bk-op">(${i + 1})</span><span>${rtTxt(o)}</span></div>`).join('')}</div>`;
   }
   if (q.type === 'multi') {
     return `<div class="bk-opts">${q.opts.map((o, i) =>
-      `<label class="bk-opt"><input type="checkbox" value="${i}" hidden><span class="bk-op">(${i + 1})</span><span>${mDispOpt(o)}</span></label>`).join('')}</div>`;
+      `<label class="bk-opt"><input type="checkbox" value="${i}" hidden><span class="bk-op">(${i + 1})</span><span>${rtTxt(o)}</span></label>`).join('')}</div>`;
   }
   return '';
 }
@@ -3271,6 +3276,53 @@ function syncCard() {
 }
 
 /* ═══════════ 啟動 ═══════════ */
+/* KaTeX 自動排版：監看 #app，內容一變就把 \(…\) / $$…$$ 的數學排成正式二維樣式。
+   引擎沒載入（離線 artifact）時整段跳過，內容維持 LaTeX 原文（不炸）。 */
+let mjTimer = null;
+function typesetMath() {
+  const el = app(); if (!el) return;
+  if (window.renderMathInElement) {
+    try {
+      renderMathInElement(el, {
+        delimiters: [{ left: '\\(', right: '\\)', display: false }, { left: '$$', right: '$$', display: true }],
+        throwOnError: false, ignoredTags: ['script', 'noscript', 'style', 'textarea', 'canvas'],
+      });
+    } catch (e) {}
+  } else {
+    deLatexNode(el); // 離線 artifact（CDN 被擋、KaTeX 沒載）：把 \(…\) 降級成可讀純文字
+  }
+}
+/* KaTeX 缺席時的後備：把常見 LaTeX 指令還原成可讀文字（√、分數 a/b、C(n,k)、矩陣…） */
+function deLatexBody(b) {
+  return b
+    .replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, '$1√$2')
+    .replace(/\\sqrt\{([^{}]*)\}/g, '√$1')
+    .replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '$1/$2')
+    .replace(/\\binom\{([^{}]*)\}\{([^{}]*)\}/g, 'C($1,$2)')
+    .replace(/\{\}\^\{([^{}]*)\}\\!?P_\{([^{}]*)\}/g, 'P($1,$2)')
+    .replace(/\\begin\{[bvp]matrix\}([\s\S]*?)\\end\{[bvp]matrix\}/g, (m, x) => '[' + x.replace(/\s*&\s*/g, ',').replace(/\\\\/g, '; ').trim() + ']')
+    .replace(/\^\{([^{}]*)\}/g, '^$1').replace(/_\{([^{}]*)\}/g, '_$1')
+    .replace(/\\times/g, '×').replace(/\\cdot/g, '·').replace(/\\pm/g, '±')
+    .replace(/\\le\b/g, '≤').replace(/\\ge\b/g, '≥').replace(/\\ne\b/g, '≠')
+    .replace(/\\(sin|cos|tan|log)\b/g, '$1').replace(/\\circ/g, '°')
+    .replace(/\\[!,]/g, '').replace(/\\ /g, ' ').replace(/\\left|\\right/g, '').replace(/[{}]/g, '');
+}
+function deLatexNode(root) {
+  if (!document.createTreeWalker) return;
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) { return /\\\(|\$\$/.test(n.nodeValue) && n.parentElement && !n.parentElement.closest('script,style,textarea,canvas') ? 1 : 2; },
+  });
+  const nodes = []; let n; while ((n = w.nextNode())) nodes.push(n);
+  for (const nd of nodes) nd.nodeValue = nd.nodeValue
+    .replace(/\\\(([\s\S]*?)\\\)/g, (m, b) => deLatexBody(b))
+    .replace(/\$\$([\s\S]*?)\$\$/g, (m, b) => deLatexBody(b));
+}
+function initMathObserver() {
+  const el = app(); if (!el || !window.MutationObserver) return;
+  const mo = new MutationObserver(() => { clearTimeout(mjTimer); mjTimer = setTimeout(typesetMath, 30); });
+  mo.observe(el, { childList: true, subtree: true });
+  typesetMath();
+}
 function boot() {
   const navEl = $('nav');
   navEl.innerHTML = Object.keys(VIEWS).map((v) =>
@@ -3279,6 +3331,9 @@ function boot() {
   aiKeyMigrate();
   supaInit();
   nav('home');
+  initMathObserver();
+  // KaTeX 是 defer 載入，可能比 app.js 晚就緒：載到就補排一次
+  if (!window.renderMathInElement) window.addEventListener('load', () => setTimeout(typesetMath, 50));
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
 else boot();
