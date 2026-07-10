@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -2418,7 +2418,7 @@ function qGrade(optIdx) {
     $('#qfb').innerHTML = '<p class="dim">🤖 AI 批改中…（認字、對答案、檢查過程哪裡開始錯）</p>';
     const sess = qsess; // 綁定本題：離開或換題後，遲到的回應直接丟棄
     aiGradeCall(q, q.ans.join(' 或 '), calcB64)
-      .then((v) => { if (qsess !== sess) return; qsess.ai = v; qShowJudge(true); })
+      .then((v) => { if (qsess !== sess) return; qsess.ai = v; inkMarkAuto(q.id, !!v.correct, String(q.ans[0])); qResolve(!!v.correct); }) // AI 判定直接生效→解答頁（不再多按一次「改對了」；改判連結留在解答頁）
       .catch((e) => { if (qsess !== sess) return; qsess.aiErr = (e && e.message) || String(e); qShowJudge(false); });
   } else {
     if (aiKey() && !calcB64) qsess.noInk = true; // 有 key 卻沒有任何筆跡：要明講，不能靜默
@@ -2447,44 +2447,55 @@ function qShowJudge(hasAI) {
       <button class="btn primary" onclick="qResolve(true)">✓ 我對了</button></div>`;
   }
 }
+function fbInView() { // 批改完把回饋區捲到頂：最上面就是判定＋「下一題」，不用往下拉
+  const fb = $('#qfb');
+  if (fb && fb.scrollIntoView) { try { fb.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) { fb.scrollIntoView(); } }
+}
 function qResolve(ok) {
   const { q } = qsess;
   const ms = qsess.ms;
   const target = qTarget(q);
   const overtime = timerOn() && ok && ms > target * 1.5;
   const correctTxt = q.type === 'fill' ? q.ans[0] : q.ans.map((a) => `(${a + 1})`).join('');
-  // 筆跡一律上傳（珍貴分析資料）；被排除的標記 excluded，統計時可濾掉
-  syncInk(q.id, qsess.t0, Object.assign(
-    { mode: qsess.cfg.review ? 'review' : 'practice', ok, excluded: !!qsess.exclude, ai: qsess.ai || null }, qsess.proc || {}));
+  // 筆跡一律上傳（珍貴分析資料）；改判會重跑 qResolve，用旗標避免重複上傳
+  if (!qsess.inkSynced) {
+    syncInk(q.id, qsess.t0, Object.assign(
+      { mode: qsess.cfg.review ? 'review' : 'practice', ok, excluded: !!qsess.exclude, ai: qsess.ai || null }, qsess.proc || {}));
+    qsess.inkSynced = true;
+  }
   const fb = $('#qfb');
-  const solBlock = `
+  // 批改完的動作放最上面，一按就到下一題（不用往下拉）
+  const action = !ok
+    ? `<p><b>錯因？（選一個就進下一題）</b></p>
+       <div class="chips r">${ERR_TYPES.slice(0, 4).map((e) =>
+        `<button class="btn err" onclick="qFinish(false, ${ms}, '${e}')">${e}</button>`).join('')}</div>`
+    : `<div class="actr"><button class="btn primary big" onclick="qFinish(true, ${ms}, ${overtime ? "'超時'" : 'null'})">下一題 →</button></div>`;
+  const changeVerdict = qsess.ai ? `<div class="actr"><button class="btn sm" onclick="qResolve(${!ok})">AI 判${ok ? '對' : '錯'}了？改判為「${ok ? '答錯' : '答對'}」</button></div>` : '';
+  // 詳解/快解/老師方法收進摺疊：答對預設收起（一堆解釋不擋路）、答錯自動展開（要學）
+  const detail = `<details class="sol-detail" ${ok ? '' : 'open'} ontoggle="if(this.open){const b=this.querySelector('#mlib-box');if(b&&!b.innerHTML)showMethods('${q.topic}',true)}">
+      <summary class="dim">📖 詳解 ／ 快解 ／ 老師方法（點開）</summary>
+      <p><b>詳解：</b>${rtTxt(q.sol)}</p>
+      ${q.tip ? `<p class="tip">💡 <b>快解：</b>${rtTxt(q.tip)}</p>` : ''}
+      ${teachBlock(q.id)}
+      <div class="mlib" style="margin-top:6px"><div id="mlib-box"></div></div>
+      ${inkSummary(qsess.proc)}
+      ${qsess.proc && qsess.proc.n ? `<div class="actr"><button class="btn sm" onclick="inkReplay('${jsA(q.id)}', ${qsess.t0})">▶ 回放解題過程</button></div>` : ''}
+    </details>`;
+  fb.innerHTML = `
     <div class="sol">
       <p>${ok ? '<span class="ok">✔ 答對</span>' : `<span class="bad">✘ 答錯</span>（你的答案：${escH(qsess.yourAns)}）`}
          ｜正解：<b>${q.type === 'fill' ? mDispOpt(String(correctTxt)) : correctTxt}</b>${timerOn() ? `｜耗時 ${fmtSec(ms)}（目標 ${fmtSec(target)}）` : ''}
          ${overtime ? '<span class="warnc"><b>⚠ 對但超時 1.5 倍——考場上這題等於沒拿到</b></span>' : ''}</p>
       ${ok ? praiseFor(q, ok, ms, target) : ''}
       ${qsess.ai ? aiFeedbackHTML(qsess.ai) : ''}
-      <p><b>詳解：</b>${rtTxt(q.sol)}</p>
-      ${q.tip ? `<p class="tip">💡 <b>快解：</b>${rtTxt(q.tip)}</p>` : ''}
-      ${teachBlock(q.id)}
       <div id="ai-proc"></div>
-      <details class="mlib-fold" ontoggle="if(this.open){const b=this.querySelector('#mlib-box');if(b&&!b.innerHTML)showMethods('${q.topic}',true)}"><summary class="dim">🧑‍🏫 老師方法庫：${TOPICS[q.topic]}（點開看）</summary><div id="mlib-box"></div></details>
-      ${inkSummary(qsess.proc)}
-      ${qsess.proc && qsess.proc.n ? `<div class="actr"><button class="btn sm" onclick="inkReplay('${jsA(q.id)}', ${qsess.t0})">▶ 回放解題過程</button></div>` : ''}
+      ${action}
+      ${changeVerdict}
+      ${detail}
       ${qsess.exclude ? '<p class="warnc">（依你的選擇，這筆不列入紀錄）</p>' : ''}
     </div>`;
-  if (!ok) {
-    fb.innerHTML = solBlock + `
-      <p><b>錯因是什麼？（誠實選，這決定你之後練什麼）</b></p>
-      <div class="chips r">${ERR_TYPES.slice(0, 4).map((e) =>
-        `<button class="btn err" onclick="qFinish(false, ${ms}, '${e}')">${e}</button>`).join('')}
-      </div>`;
-    showMethods(q.topic, true); // 答錯＝概念洞：主動端出老師方法，不用自己去按
-  } else if (overtime) {
-    fb.innerHTML = solBlock + `<div class="actr"><button class="btn primary" onclick="qFinish(true, ${ms}, '超時')">下一題</button></div>`;
-  } else {
-    fb.innerHTML = solBlock + `<div class="actr"><button class="btn primary" onclick="qFinish(true, ${ms}, null)">下一題</button></div>`;
-  }
+  fbInView();
+  if (!ok) showMethods(q.topic, true); // 答錯＝概念洞：詳解已展開，直接把老師方法載進去
   // 選擇題/打字題也要 AI 看過程（手寫填充題的 AI 批改已含過程分析，不重複）
   if (aiKey() && !qsess.ai && qsess.proc && qsess.proc.n) {
     const el = document.getElementById('ai-proc');

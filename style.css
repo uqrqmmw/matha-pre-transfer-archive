@@ -290,6 +290,14 @@ sup .vfrac { font-size: 1em; margin: 0 0.05em; }
 .mlib summary { cursor: pointer; font-weight: 600; color: var(--accent); }
 .mlib details p { margin: 6px 0 4px; }
 
+/* 批改後：詳解/快解/老師方法摺疊（答對預設收起，不擋「下一題」） */
+.sol-detail { margin: 12px 0 2px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; background: var(--panel2); }
+.sol-detail > summary { cursor: pointer; font-weight: 600; padding: 3px 0; list-style: none; }
+.sol-detail > summary::-webkit-details-marker { display: none; }
+.sol-detail > summary::before { content: '▸ '; color: var(--accent); }
+.sol-detail[open] > summary::before { content: '▾ '; }
+.sol-detail[open] > summary { margin-bottom: 8px; border-bottom: 1px dashed var(--border); }
+
 /* 🧑‍🏫 老師蒸餾 */
 .teach { background: rgba(15, 118, 110, 0.07); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 10px 14px; margin: 10px 0; }
 .teach-tip { color: var(--accent); font-size: 0.95em; }
