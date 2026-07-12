@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0712c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0712f'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -23,7 +23,9 @@ function save() {
   return ok; // 匯入等大寫入要檢查回傳，別在存失敗時報「完成」
 }
 function exportData() {
-  const blob = new Blob([JSON.stringify(S)], { type: 'application/json' });
+  // 分家後備份也要帶內容層（__content 欄位；匯入時會還原並剔除，不會污染 S）
+  const payload = splitOn() && Object.keys(CONTENT.packs).length ? { ...S, __content: CONTENT.packs } : S;
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `mathA13-備份-${today()}.json`;
@@ -65,22 +67,165 @@ function validateQ(q) {
 }
 let BANK_MAP = null; // id → 題目（extbank 破千後 find 掃描會卡，統一走 Map）
 function rebuildBankMap() { BANK_MAP = new Map(BANK.map((q) => [q.id, q])); }
+const BUILTIN_N = BANK.length; // bank.js 內建題數：applyExtBank 重建時的切點
 /* packOff 用「墓碑＋時間戳」{off,ts} 而非刪 key：刪 key 在雲端聯集合併下會讓「重新啟用」被舊旗標吃回去。舊格式 true 視同 {off:true,ts:0}。 */
 function packIsOff(src) {
   const v = S.packOff && S.packOff[src];
   return v === true || !!(v && v.off);
 }
-function applyExtBank() {
-  if (S.extbank && Array.isArray(S.extbank)) {
-    const have = new Set(BANK.map((q) => q.id));
-    for (const q of S.extbank) {
-      if (!q || !q.id || have.has(q.id)) continue;
-      if (q.needsFigure && !q.fig) continue; // 需要圖才能解、圖還沒補上的題不出（避免無圖硬解）
-      if (q.dup) continue; // 內容重複題（講義收錄的歷屆題等）：只出正主，不出分身
-      if (q.src && packIsOff(q.src)) continue; // 使用者停用的內容包
-      if (validateQ(q)) continue; // 壞題（雲端舊資料也可能有）擋在庫外，避免炸 render
-      BANK.push(q); have.add(q.id);
+
+/* ═══════════ 📦 內容層（內容/狀態分家） ═══════════
+   題庫/重點/公式卡是「幾乎不變的內容」，作答紀錄是「一直變的狀態」——混在一包會讓每次作答
+   整包上傳好幾 MB、localStorage 撞 5MB 上限（20+ 本講義必爆）。
+   分家後：內容存 IndexedDB（本地）＋ content_packs 表（雲端，匯入才上傳），S 只剩輕狀態。
+   啟用條件：雲端偵測到 content_packs 表（Dashboard 跑過 schema.sql 新段）→ 自動遷移並記住；
+   表還沒建 → 完全維持舊行為（內容照舊放 S），零風險降級。 */
+const SPLIT_LS = 'mathA13_split_v1';
+const CONTENT_LS = 'mathA13_content_v1'; // IndexedDB 不可用時的後備
+let CONTENT = { packs: {} }; // pack_id → { kind:'qpack'|'notes'|'flash', name, rev, items:[…] }
+let contentTableMissing = false;
+function splitOn() { try { return localStorage.getItem(SPLIT_LS) === '1'; } catch (e) { return false; } }
+function extBankArr() { return splitOn() ? contentByKind('qpack') : (S.extbank || []); }
+function extFlashArr() { return splitOn() ? contentByKind('flash') : (S.extflash || []); }
+function extNotesArr() { return splitOn() ? contentByKind('notes') : (S.extnotes || []); }
+function contentByKind(kind) {
+  const out = [];
+  for (const pid of Object.keys(CONTENT.packs)) {
+    const p = CONTENT.packs[pid];
+    if (p && p.kind === kind && Array.isArray(p.items)) out.push(...p.items);
+  }
+  return out;
+}
+let _idb = null;
+function idbOpen() {
+  if (_idb) return Promise.resolve(_idb);
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open('mathA13Content', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('packs');
+    rq.onsuccess = () => { _idb = rq.result; res(_idb); }; // 快取單一連線：反覆 open 不關會累積連線、可能互相 block
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function idbReadAll() {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const st = db.transaction('packs').objectStore('packs');
+    const out = {}; const rq = st.openCursor();
+    rq.onsuccess = () => { const c = rq.result; if (c) { out[c.key] = c.value; c.continue(); } else res(out); };
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function idbWriteAll(packs) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('packs', 'readwrite');
+    const st = tx.objectStore('packs');
+    for (const k of Object.keys(packs)) st.put(packs[k], k);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function contentInit() {
+  if (!splitOn()) return;
+  try { CONTENT.packs = await idbReadAll(); return; } catch (e) {}
+  try { CONTENT.packs = JSON.parse(localStorage.getItem(CONTENT_LS) || '{}'); } catch (e) { CONTENT.packs = {}; }
+}
+function persistContent() {
+  // 回傳 promise：匯入/停用後要「等寫完再 reload」，否則 IDB 交易還沒 commit 就重載＝內容遺失
+  return idbWriteAll(CONTENT.packs).catch(() => {
+    try { localStorage.setItem(CONTENT_LS, JSON.stringify(CONTENT.packs)); }
+    catch (e) { saveQuotaErr = true; try { syncPill(); } catch (_) {} }
+  });
+}
+/* 等內容確實寫入本機後再重載：寫入 → 讀回驗證 → 才 reload（IDB 非同步，reload 不能搶在 commit 前）。
+   驗證失敗就再試一次；仍失敗也照樣 reload（頂多重匯入一次），不卡住使用者。 */
+async function reloadAfterContent() {
+  const want = Object.keys(CONTENT.packs).reduce((n, k) => n + ((CONTENT.packs[k].items || []).length), 0);
+  for (let tries = 0; tries < 2; tries++) {
+    await persistContent();
+    try {
+      const back = await idbReadAll();
+      const got = Object.keys(back).reduce((n, k) => n + ((back[k].items || []).length), 0);
+      if (got >= want) break;
+    } catch (e) { break; }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  location.reload();
+}
+/* 匯入/遷移共用：把 items 併進（或建立）一個 pack；unionById.last 供回報 */
+function upsertPack(pid, kind, name, items) {
+  const old = CONTENT.packs[pid];
+  CONTENT.packs[pid] = { kind, name: name || (old && old.name) || pid, rev: Date.now(), items: unionById(items, old ? old.items : []) };
+}
+/* 舊資料遷移：S 裡的 extbank/extflash/extnotes 搬進內容層（跨裝置 merge 進來的舊包也走這裡） */
+function migrateContentFromS() {
+  let moved = false;
+  if (Array.isArray(S.extbank) && S.extbank.length) {
+    const bySrc = {};
+    for (const q of S.extbank) (bySrc[q.src || '未標來源'] = bySrc[q.src || '未標來源'] || []).push(q);
+    for (const src of Object.keys(bySrc)) upsertPack('legacy-' + strHash(src), 'qpack', src, bySrc[src]);
+    moved = true;
+  }
+  if (Array.isArray(S.extflash) && S.extflash.length) { upsertPack('legacy-flash', 'flash', '匯入公式卡', S.extflash); moved = true; }
+  if (Array.isArray(S.extnotes) && S.extnotes.length) { upsertPack('legacy-notes', 'notes', '匯入重點', S.extnotes); moved = true; }
+  if (moved) {
+    delete S.extbank; delete S.extflash; delete S.extnotes;
+    save(); // S 瘦身上雲
+    persistContent();
+    for (const pid of Object.keys(CONTENT.packs)) pushPack(pid);
+  }
+  return moved;
+}
+function pushPack(pid) {
+  if (!supa || !syncState.user || !splitOn()) return;
+  const p = CONTENT.packs[pid];
+  if (!p) return;
+  supa.from('content_packs')
+    .upsert({ user_id: syncState.user.id, pack_id: pid, kind: p.kind, name: p.name, rev: p.rev, items: p.items, updated_at: new Date().toISOString() })
+    .then(({ error }) => { if (error) { syncState.msg = '內容包上傳失敗：' + error.message; syncPill(); } });
+}
+/* 登入後：偵測 content_packs 表 → 啟用分家＋遷移；已啟用則做內容差異同步 */
+async function probeContent() {
+  if (!supa || !syncState.user) return;
+  if (!splitOn()) {
+    const { error } = await supa.from('content_packs').select('pack_id').limit(1);
+    if (error) { contentTableMissing = true; return; } // 表未建：維持舊行為，隨時可補
+    try { localStorage.setItem(SPLIT_LS, '1'); } catch (e) { return; }
+    contentTableMissing = false;
+  }
+  migrateContentFromS();
+  await pullContent();
+}
+async function pullContent() {
+  if (!supa || !syncState.user || !splitOn()) return;
+  try {
+    const { data, error } = await supa.from('content_packs').select('pack_id,kind,name,rev');
+    if (error || !data) return;
+    let changed = false;
+    for (const r of data) {
+      const local = CONTENT.packs[r.pack_id];
+      if (local && (local.rev || 0) >= (r.rev || 0)) continue;
+      const { data: row } = await supa.from('content_packs').select('*').eq('pack_id', r.pack_id).maybeSingle();
+      if (row && Array.isArray(row.items)) { CONTENT.packs[r.pack_id] = { kind: row.kind, name: row.name, rev: row.rev, items: row.items }; changed = true; }
     }
+    for (const pid of Object.keys(CONTENT.packs)) { // 本地較新（離線匯入過）→ 補推
+      const remote = data.find((r) => r.pack_id === pid);
+      if (!remote || (remote.rev || 0) < (CONTENT.packs[pid].rev || 0)) pushPack(pid);
+    }
+    if (changed) { persistContent(); applyExtBank(); updateBadge(); }
+  } catch (e) {}
+}
+function applyExtBank() {
+  BANK.length = BUILTIN_N; // 冪等重建：內容更新（rev 覆蓋/停用切換/雲端拉回）直接重灌外部段
+  const ext = extBankArr();
+  const have = new Set(BANK.map((q) => q.id));
+  for (const q of ext) {
+    if (!q || !q.id || have.has(q.id)) continue;
+    if (q.needsFigure && !q.fig) continue; // 需要圖才能解、圖還沒補上的題不出（避免無圖硬解）
+    if (q.dup) continue; // 內容重複題（講義收錄的歷屆題等）：只出正主，不出分身
+    if (q.src && packIsOff(q.src)) continue; // 使用者停用的內容包
+    if (validateQ(q)) continue; // 壞題（雲端舊資料也可能有）擋在庫外，避免炸 render
+    BANK.push(q); have.add(q.id);
   }
   rebuildBankMap();
 }
@@ -94,12 +239,20 @@ function importQPack(items, name) {
   });
   if (!good.length) { alert(`這包題目全部沒過驗證，未匯入。\n${bad.slice(0, 10).join('\n')}${bad.length > 10 ? `\n…共 ${bad.length} 題` : ''}`); return; }
   if (!confirm(`題包${name ? '「' + name + '」' : ''}：${good.length} 題通過驗證${bad.length ? `、${bad.length} 題有問題被擋下` : ''}。併入後刷題與模擬會自動納入，確定？`)) return;
-  S.extbank = unionById(good, S.extbank);
-  const st = unionById.last || {};
-  if (!save()) { alert('本機儲存空間已滿，這包沒有存下來——先匯出備份或清理空間再試。'); return; }
+  let st;
+  let splitPid = null;
+  if (splitOn()) { // 內容層：進 pack、不進 S（作答同步不再揹著題庫跑）
+    splitPid = 'imp-' + strHash(name || 'qpack');
+    upsertPack(splitPid, 'qpack', name || '匯入題包', good);
+    st = unionById.last || {};
+  } else {
+    S.extbank = unionById(good, S.extbank);
+    st = unionById.last || {};
+    if (!save()) { alert('本機儲存空間已滿，這包沒有存下來——先匯出備份或清理空間再試。'); return; }
+  }
   if (bad.length) console.table(bad);
-  alert(`完成：新增 ${st.added || 0} 題、更新 ${st.updated || 0} 題、略過 ${st.skipped || 0} 題（版本相同）。外部題庫共 ${S.extbank.length} 題。${bad.length ? `\n\n被擋下 ${bad.length} 題：\n${bad.slice(0, 5).join('\n')}${bad.length > 5 ? `\n…其餘見主控台` : ''}` : ''}`);
-  location.reload();
+  alert(`完成：新增 ${st.added || 0} 題、更新 ${st.updated || 0} 題、略過 ${st.skipped || 0} 題（版本相同）。外部題庫共 ${extBankArr().length} 題。${bad.length ? `\n\n被擋下 ${bad.length} 題：\n${bad.slice(0, 5).join('\n')}${bad.length > 5 ? `\n…其餘見主控台` : ''}` : ''}`);
+  if (splitPid) { pushPack(splitPid); reloadAfterContent(); } else location.reload(); // 等 IDB 寫完再 reload
 }
 function importData(input) {
   const f = input.files[0]; if (!f) return;
@@ -111,26 +264,23 @@ function importData(input) {
       if (d && d.kind && !Array.isArray(d.items)) { alert(`內容包格式不對：items 必須是陣列（kind=${escH(String(d.kind))}）。`); return; }
       if (d && d.kind && Array.isArray(d.items)) {
         if (d.kind === 'qpack') { importQPack(d.items, d.name); return; }
-        if (d.kind === 'flash') {
-          const ok = d.items.filter((c) => c && c.id && c.front && c.back && TOPICS[c.unit]);
-          if (!ok.length) { alert('這包公式卡格式不對（每張需 id/unit/front/back）。'); return; }
-          if (!confirm(`公式卡包${d.name ? '「' + d.name + '」' : ''}：${ok.length} 張。匯入後手機專區「公式必背卡」會納入，確定？`)) return;
-          S.extflash = unionById(ok, S.extflash);
-          const st = unionById.last || {};
-          if (!save()) { alert('本機儲存空間已滿，這包沒有存下來。'); return; }
-          alert(`完成：新增 ${st.added || 0}、更新 ${st.updated || 0} 張。`);
-          location.reload();
-          return;
-        }
-        if (d.kind === 'notes') {
-          const ok = d.items.filter((n) => n && n.id && TOPICS[n.topic] && n.title && n.html);
-          if (!ok.length) { alert('這包重點整理格式不對（每條需 id/topic/title/html）。'); return; }
-          if (!confirm(`重點整理包${d.name ? '「' + d.name + '」' : ''}：${ok.length} 條。匯入後戰力地圖 📚 與詳解區會顯示，確定？`)) return;
-          S.extnotes = unionById(ok, S.extnotes);
-          const st = unionById.last || {};
-          if (!save()) { alert('本機儲存空間已滿，這包沒有存下來。'); return; }
-          alert(`完成：新增 ${st.added || 0}、更新 ${st.updated || 0} 條重點。`);
-          location.reload();
+        if (d.kind === 'flash' || d.kind === 'notes') {
+          const isF = d.kind === 'flash';
+          const ok = d.items.filter((x) => isF ? (x && x.id && x.front && x.back && TOPICS[x.unit]) : (x && x.id && TOPICS[x.topic] && x.title && x.html));
+          if (!ok.length) { alert(isF ? '這包公式卡格式不對（每張需 id/unit/front/back）。' : '這包重點整理格式不對（每條需 id/topic/title/html）。'); return; }
+          if (!confirm(`${isF ? '公式卡包' : '重點整理包'}${d.name ? '「' + d.name + '」' : ''}：${ok.length} ${isF ? '張' : '條'}。確定匯入？`)) return;
+          let st, spid = null;
+          if (splitOn()) {
+            spid = 'imp-' + strHash((d.name || d.kind) + ':' + d.kind);
+            upsertPack(spid, d.kind, d.name || (isF ? '匯入公式卡' : '匯入重點'), ok);
+            st = unionById.last || {};
+          } else {
+            if (isF) S.extflash = unionById(ok, S.extflash); else S.extnotes = unionById(ok, S.extnotes);
+            st = unionById.last || {};
+            if (!save()) { alert('本機儲存空間已滿，這包沒有存下來。'); return; }
+          }
+          alert(`完成：新增 ${st.added || 0}、更新 ${st.updated || 0} ${isF ? '張' : '條重點'}。`);
+          if (spid) { pushPack(spid); reloadAfterContent(); } else location.reload();
           return;
         }
         alert(`不認得的內容包 kind：「${d.kind}」（支援 qpack / flash / notes）。`);
@@ -144,6 +294,10 @@ function importData(input) {
       if (!d || !Array.isArray(d.attempts)) { alert('這不是本系統的備份檔（缺 attempts 欄位）。'); return; }
       const cur = S.attempts.length;
       if (!confirm(`備份檔含 ${d.attempts.length} 筆作答紀錄、${Object.keys(d.wrong || {}).length} 題錯題。\n匯入會覆蓋目前這個瀏覽器裡的 ${cur} 筆紀錄，確定？`)) return;
+      if (d.__content) { // 分家版備份：內容層還原到 IndexedDB，不留在 S
+        if (splitOn()) { CONTENT.packs = d.__content; persistContent(); }
+        delete d.__content;
+      }
       S = d; save(); location.reload();
     } catch (e) { alert('讀取失敗：' + e.message); }
   };
@@ -192,14 +346,15 @@ function inkHTML(opts) {
   return `<div class="card ink-card">
     <div class="ink-bar"><b>${phone ? '✍️ 筆記區' : '✍️ 計算區'}</b>${inkToolsHTML()}</div>
     <div id="ink-flash" class="ink-flash" style="display:none"></div>
-    <div class="ink-scroll"><canvas id="ink-cv" data-h="${phone ? 170 : small ? 240 : 0}"></canvas></div>
+    <div class="ink-scroll"><canvas id="ink-cv" data-h="${phone ? 170 : small ? 240 : 0}"${phone ? ' data-touch="1"' : ''}></canvas></div>
     <p class="dim ink-hint">${phone
-      ? '隨手算用，不批改。'
+      ? '手指直接畫；隨手算用，不批改。'
       : '兩指捲動；<b>答案寫在最後、圈起來</b>。'}</p>
   </div>`;
 }
 function inkSurface(key, cv, h) {
-  const sur = { key, cv, ctx: cv.getContext('2d'), h, cur: null, touches: new Map() };
+  // allowTouch＝手機筆記卡：手指就是筆（單指畫、第二指加入改捲動）；平板題卡維持只認筆、手掌免疫
+  const sur = { key, cv, ctx: cv.getContext('2d'), h, cur: null, touches: new Map(), allowTouch: cv.dataset.touch === '1' };
   cv.style.pointerEvents = '';
   cv.onpointerdown = (e) => inkDown(e, sur);
   cv.onpointermove = (e) => inkMove(e, sur);
@@ -276,6 +431,17 @@ function inkDown(e, sur) {
   e.preventDefault();
   try { sur.cv.setPointerCapture(e.pointerId); } catch (_) {}
   if (e.pointerType === 'touch') {
+    if (sur.allowTouch) { // 手機筆記卡：第一指＝畫線
+      if (sur.touches.size === 0 && !sur.cur) {
+        sur.touches.set(e.pointerId, { y: e.clientY, x0: e.clientX, y0: e.clientY, t: Date.now() });
+        const [x, y] = inkPos(e, sur);
+        sur.cur = { t0: Date.now(), c: inkColor, pts: [[x, y]], tid: e.pointerId };
+        return;
+      }
+      if (sur.cur && sur.cur.tid != null) { sur.cur = null; inkRedraw(sur); } // 第二指加入＝改捲動，作廢進行中的指畫
+      sur.touches.set(e.pointerId, { y: e.clientY, x0: e.clientX, y0: e.clientY, t: Date.now() });
+      return;
+    }
     // 手指/手掌：永不畫線。筆活躍（正在寫、或 0.8 秒內寫過）時手掌觸點完全忽略——不殺筆、不捲動。
     if (sur.cur || Date.now() - ink.penAt < 800) return;
     sur.touches.set(e.pointerId, { y: e.clientY, x0: e.clientX, y0: e.clientY, t: Date.now() });
@@ -289,6 +455,17 @@ function inkDown(e, sur) {
 function inkMove(e, sur) {
   if (!ink) return;
   if (e.pointerType === 'touch') {
+    if (sur.allowTouch && sur.cur && sur.cur.tid === e.pointerId) { // 指畫進行中：照筆的畫法走
+      e.preventDefault();
+      const [x, y] = inkPos(e, sur);
+      const pts = sur.cur.pts; const p = pts[pts.length - 1];
+      if (Math.abs(x - p[0]) + Math.abs(y - p[1]) < 2) return;
+      pts.push([x, y]);
+      const c = sur.ctx;
+      c.strokeStyle = INK_COLORS[sur.cur.c] || INK_COLORS.k; c.lineWidth = INK_W;
+      c.beginPath(); c.moveTo(p[0], p[1]); c.lineTo(x, y); c.stroke();
+      return;
+    }
     if (!sur.touches.has(e.pointerId)) return;
     e.preventDefault();
     if (Date.now() - ink.penAt < 800) return; // 筆剛寫過：手掌移動不捲動
@@ -322,6 +499,12 @@ function inkMove(e, sur) {
 function inkUp(e, sur) {
   if (!ink) return;
   if (e.pointerType === 'touch') {
+    if (sur.allowTouch && sur.cur && sur.cur.tid === e.pointerId) { // 指畫收筆
+      const cur = sur.cur; sur.cur = null;
+      sur.touches.delete(e.pointerId);
+      if (cur.pts.length > 1) { cur.t1 = Date.now(); delete cur.tid; inkArr(sur).push(cur); }
+      return;
+    }
     sur.touches.delete(e.pointerId);
     return; // 按鈕/選項都以 z-index 浮在畫布上層，觸點會直接落在它們身上，不需要穿透
   }
@@ -1643,8 +1826,8 @@ function typesetIn(el) {
   }
 }
 function showUnitNotes(k) {
-  const notes = (S.extnotes || []).filter((x) => x.topic === k).sort((a, b) => (a.order || 0) - (b.order || 0));
-  const flash = FLASH.concat(S.extflash || []).filter((f) => f.unit === k);
+  const notes = extNotesArr().filter((x) => x.topic === k).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const flash = FLASH.concat(extFlashArr()).filter((f) => f.unit === k);
   modal(`<h2>📚 ${TOPICS[k]} 重點</h2>
     <div class="notes-scroll">
       ${notes.length ? notes.map((n) => `<details class="note"><summary>${escH(n.title)}</summary><div>${rtTxt(n.html)}</div></details>`).join('') : '<p class="dim">參考書重點還沒匯入——之後把重點包（kind:notes）從 📊 數據頁匯入就會出現在這裡。</p>'}
@@ -1703,6 +1886,7 @@ function endSession() {
   if (drill && drill.nextTimer) { clearTimeout(drill.nextTimer); drill.nextTimer = null; }
   if (phone && phone.nextTimer) clearTimeout(phone.nextTimer);
   phone = null; // 手機專區進行中的輪次作廢
+  mnq = null; // 口訣快答同理
   wflash = null; // 衝刺複習中途離開即作廢（無紀錄可丟）
   qsess = null; // 讓遲到的 AI 批改回呼認得出「這一題已經結束了」
   sessionChrome(false);
@@ -2162,15 +2346,15 @@ function renderPhone() {
         <p class="dim">12 題連發、4 選 1。</p>
         <button class="btn primary" onclick="startPhoneQuiz()">開始 12 題</button></div>
       <div class="card drill-card"><b>🧠 公式必背卡</b>
-        <p class="dim">${FLASH.length + (S.extflash || []).length} 張，忘過的更常出現。</p>
+        <p class="dim">${FLASH.length + extFlashArr().length} 張，忘過的更常出現。</p>
         <button class="btn primary" onclick="startPhoneFlash('formula')">抽 10 張</button></div>
-      <div class="card drill-card"><b>🧑‍🏫 老師口訣卡</b>
-        <p class="dim">1500+ 條老師口訣。${supa && !syncState.user ? '<b class="warnc">需登入才能載入</b>' : ''}</p>
-        <button class="btn primary" onclick="startPhoneFlash('mn')">抽 10 張</button></div>
+      <div class="card drill-card"><b>🧑‍🏫 口訣快答</b>
+        <p class="dim">看口訣選「它在解什麼」，答完看老師怎麼用。${supa && !syncState.user ? '<b class="warnc">需登入才能載入</b>' : ''}</p>
+        <button class="btn primary" onclick="startMnQuiz()">來 10 題</button></div>
     </div>
     ${p ? `<div class="card"><p>📅 今日手機練：<b>${p.n}</b> 題/卡｜答對/記得 <b>${p.ok}</b>（${p.n ? Math.round(100 * p.ok / p.n) : 0}%）</p></div>` : ''}
     ${hist.length ? `<div class="card"><h2>近幾輪</h2><table class="tbl"><tr><th>日期</th><th>模式</th><th>成績</th></tr>
-      ${hist.map((h) => `<tr><td>${h.d}</td><td>${h.mode === 'quiz' ? '⚡ 心算' : h.mode === 'mn' ? '🧑‍🏫 口訣' : '🧠 公式'}</td><td>${h.ok}/${h.n}</td></tr>`).reverse().join('')}</table></div>` : ''}`;
+      ${hist.map((h) => `<tr><td>${h.d}</td><td>${h.mode === 'quiz' ? '⚡ 心算' : (h.mode === 'mn' || h.mode === 'mnq') ? '🧑‍🏫 口訣' : '🧠 公式'}</td><td>${h.ok}/${h.n}</td></tr>`).reverse().join('')}</table></div>` : ''}`;
 }
 let phone = null;
 function startPhoneQuiz() {
@@ -2280,17 +2464,85 @@ function startPhoneFlash(kind) {
     sessionMode = 'phone';
     flashShow();
   };
-  if (kind === 'formula') { go(FLASH.concat(S.extflash || [])); return; } // 匯入的公式卡包一起進 deck（承諾過的）
-  loadMethodLib().then((lib) => {
-    if (!lib) { alert(mlibEmptyMsg()); return; }
-    const deck = [];
-    for (const u of Object.keys(lib)) lib[u].forEach((m, i) => {
-      // 只收「真的背得起來」的短口訣（長段落是方法說明，不是口訣，放進卡片不合理）
-      // id 用內容 hash（不用陣列索引 i）：方法庫重灌/增補後，同一張卡的間隔複習記憶不會錯位
-      if (m.mnemonic && m.mnemonic.length <= 24) deck.push({ id: `mn:${strHash(u + '|' + (m.lec || '') + '|' + m.concept)}`, unit: u, front: m.concept, back: `🔑 ${m.mnemonic}`, extra: m.method });
-    });
-    go(deck);
+  if (kind === 'formula') { go(FLASH.concat(extFlashArr())); return; } // 匯入的公式卡包一起進 deck（承諾過的）
+}
+/* ═══ 🧑‍🏫 口訣快答：看口訣選「它在解什麼」——舊版「看概念回想口訣」召回難度太高，反轉成辨識方向才答得出來，
+   答完立刻看老師方法全文，把 1662 條資料變成可用的零碎複習 ═══ */
+let mnq = null;
+async function startMnQuiz() {
+  if (!syncGate()) return;
+  const lib = await loadMethodLib();
+  if (!lib) { alert(mlibEmptyMsg()); return; }
+  const pool = [];
+  for (const u of Object.keys(lib)) for (const m of lib[u]) {
+    if (m.mnemonic && m.mnemonic.length <= 40 && m.concept) pool.push({ u, mn: m.mnemonic, concept: m.concept, method: m.method });
+  }
+  if (pool.length < 8) { alert('口訣資料不足。'); return; }
+  S.phone = S.phone || { days: {}, hist: [], cards: {} };
+  const st = (S.phone.cards = S.phone.cards || {});
+  const scored = pool.map((c) => { // 答錯過的優先回鍋（沿用卡片記憶桶）
+    const key = 'mnq:' + strHash(c.u + '|' + c.mn);
+    const r = st[key];
+    return { c, key, w: (r ? r.m * 5 - r.s * 0.5 : 2) + Math.random() * 3 };
   });
+  scored.sort((a, b) => b.w - a.w);
+  const items = shuffle(scored.slice(0, 10)).map(({ c, key }) => {
+    let others = [...new Set(pool.filter((x) => x.u === c.u && x.concept !== c.concept).map((x) => x.concept))];
+    if (others.length < 3) others = others.concat([...new Set(pool.filter((x) => x.u !== c.u && x.concept !== c.concept).map((x) => x.concept))]);
+    const opts = shuffle([c.concept, ...shuffle(others).slice(0, 3)]);
+    return { key, u: c.u, mn: c.mn, method: c.method, opts, ans: opts.indexOf(c.concept) };
+  });
+  mnq = { items, i: 0, ok: 0, t0: 0, tapped: false };
+  sessionActive = true;
+  sessionMode = 'phone';
+  mnqShow();
+}
+function mnqShow() {
+  if (!mnq) return;
+  if (mnq.i >= mnq.items.length) return mnqDone();
+  const it = mnq.items[mnq.i];
+  mnq.t0 = Date.now(); mnq.tapped = false;
+  app().innerHTML = `
+    <div class="session-head"><span>🧑‍🏫 口訣快答｜第 ${mnq.i + 1} / ${mnq.items.length} 題</span>
+      <span class="shr"><button class="btn sm xbtn" onclick="exitFlow()">✕</button></span></div>
+    <div class="card qcard"><p class="dim">${TOPICS[it.u] || ''}｜老師的這句口訣，是在解哪種問題？</p>
+      <div class="qtext big">🔑 ${mathTxt(it.mn)}</div>
+      <div class="ansrow">${it.opts.map((o, i) => `<button class="btn opt block" onclick="mnqTap(${i})">${mathTxt(o)}</button>`).join('')}</div>
+      <div id="pfb"></div></div>`;
+  sessionChrome(true);
+}
+function mnqTap(idx) {
+  if (!mnq || mnq.tapped) return;
+  mnq.tapped = true;
+  const it = mnq.items[mnq.i];
+  const ok = idx === it.ans;
+  const ms = Date.now() - mnq.t0;
+  if (ok) mnq.ok++;
+  const st = (S.phone.cards[it.key] = S.phone.cards[it.key] || { s: 0, m: 0 });
+  st.s++; if (!ok) st.m++;
+  phoneLog(ok, ms);
+  document.querySelectorAll('.ansrow .btn').forEach((b, i) => {
+    b.disabled = true;
+    if (i === it.ans) b.classList.add('good');
+    else if (i === idx) b.classList.add('badpick');
+  });
+  $('#pfb').innerHTML = `${ok ? '<p class="ok">✔ 對！</p>' : '<p class="bad">✘ 不是這個。</p>'}
+    <div class="teach"><p><b>🧑‍🏫 老師怎麼用：</b>${mathTxt(it.method || '')}</p></div>
+    <div class="actr"><button class="btn primary" onclick="mnq.i++;mnqShow()">下一題 →</button></div>`;
+}
+function mnqDone() {
+  sessionActive = false; sessionMode = null; sessionChrome(false);
+  const n = mnq.items.length;
+  S.phone.hist.push({ d: today(), mode: 'mnq', n, ok: mnq.ok });
+  if (S.phone.hist.length > 200) S.phone.hist = S.phone.hist.slice(-200);
+  save();
+  const okN = mnq.ok;
+  mnq = null;
+  app().innerHTML = `<h1>口訣快答 — 結果</h1>${goalCrossBanner()}<div class="card ${okN === n ? 'good' : ''}">
+    <p class="big">答對 <b>${okN} / ${n}</b></p>
+    ${okN === n ? '<p class="praise">🎉 全對——這些口訣跟概念已經接上線了！</p>' : '<p class="dim">答錯的口訣之後會更常抽到。</p>'}
+    <div class="actr"><button class="btn" onclick="nav('phone')">回手機專區</button>
+    <button class="btn primary" onclick="startMnQuiz()">再來 10 題</button></div></div>`;
 }
 function flashShow() {
   if (!phone) return;
@@ -2694,7 +2946,7 @@ function renderPracConfig() {
       <div class="chips" id="cntChips">
         ${[5, 8, 12].map((n) => `<label class="chip"><input type="radio" name="cnt" value="${n}"${n === (S.pracCnt || 8) ? ' checked' : ''}> ${n} 題</label>`).join('')}
       </div>
-      ${(S.extbank || []).some((q) => q.src && packIsOff(q.src)) ? `<p class="dim fs13">（外部題庫有 ${(S.extbank || []).filter((q) => q.src && packIsOff(q.src)).length} 題被停用中——到 📊 數據頁可重新啟用）</p>` : ''}
+      ${extBankArr().some((q) => q.src && packIsOff(q.src)) ? `<p class="dim fs13">（外部題庫有 ${extBankArr().filter((q) => q.src && packIsOff(q.src)).length} 題被停用中——到 📊 數據頁可重新啟用）</p>` : ''}
       <div class="actr"><button class="btn primary" onclick="startPrac()">開始（未做過的題優先）</button></div>
     </div>`;
   pracSel('weak', true); // 弱項優先是預設，不是要多按一下的選項
@@ -2876,6 +3128,7 @@ function renderQuestion(q, cfg) {
     ${cfg.review && S.wrong[q.id] && !S.wrong[q.id].grad ? `<p class="dim fs13" style="margin:0 0 4px">📓 上次錯因：${S.wrong[q.id].err || '—'}${S.wrong[q.id].err === '超時' ? `｜⚡ 這次要在 ${fmtSec(target)} 內完成才過關` : ''}</p>` : ''}
     ${timerOn() ? '<div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>' : ''}
     <div id="q-flash" class="ink-flash" style="display:none"></div>
+    ${cfg.redo ? `<div class="card redo-sol"><p><b>📖 解答攤開著——照它的路，自己再走一遍（寫完照樣批改）：</b></p>${rtTxt(q.sol)}${q.solFig ? `<div class="qfig">${q.solFig}</div>` : ''}${q.tip ? `<p class="tip">💡 ${rtTxt(q.tip)}</p>` : ''}${teachBlock(q.id)}</div>` : ''}
     ${bkCard(q, cfg.head, 'qSubmit', actions)}`;
   sessionChrome(true);
   inkStart(q.id, qsess.t0);
@@ -3017,6 +3270,7 @@ function qResolve(ok) {
   if (qsess.cfg.side) {
     if (!qsess.sideRecord) { // 首次：新增一筆
       qsess.sideRecord = { qid: q.id, origId: qsess.cfg.origId || null, ok, ms, ts: Date.now(), d: today() };
+      if (qsess.cfg.redo) qsess.sideRecord.redo = 1; // 訂正重算：看著解答寫的，別跟自力類題混在一起解讀
       (S.sidePractice = S.sidePractice || []).push(qsess.sideRecord);
     } else { qsess.sideRecord.ok = ok; qsess.sideRecord.ms = ms; } // 改判：更新同一筆（陣列裡是同一個物件參照），不新增
     save();
@@ -3065,9 +3319,11 @@ function qResolve(ok) {
     : '';
   // ③ 主要動作——緊接判定，一按就走，不用往下拉；類題支線用不同按鈕（不進主流程）
   const action = qsess.cfg.side
-    ? `<div class="actr"><button class="btn primary big" onclick="sideNext()">🎯 再來一題類題</button><button class="btn" onclick="sideReturn()">↩ 回到原題</button></div>`
+    ? (qsess.cfg.redo
+      ? `<div class="actr"><button class="btn" onclick="qRedoAgain()">📝 再算一次</button><button class="btn primary big" onclick="sideReturn()">↩ 回到原題</button></div>`
+      : `<div class="actr"><button class="btn primary big" onclick="sideNext()">🎯 再來一題類題</button><button class="btn" onclick="sideReturn()">↩ 回到原題</button></div>`)
     : (!ok
-      ? `<p class="dim" style="margin:8px 0 4px">先標錯因（不會跳題——詳解看完再走）：</p><div class="chips r">${ERR_TYPES.slice(0, 4).map((e) => `<button class="chip${qsess.errPick === e ? ' sel' : ''}" onclick="qPickErr(this,'${e}')">${e}</button>`).join('')}</div><div class="actr" style="margin-top:8px"><button class="btn" onclick="qSideStart()">🎯 先練一題類題再繼續</button><button class="btn primary big" id="errnext" ${qsess.errPick ? '' : 'disabled'} onclick="qFinish(false, ${ms}, qsess.errPick)">下一題 →</button></div>`
+      ? `<p class="dim" style="margin:8px 0 4px">先標錯因（不會跳題——詳解看完再走）：</p><div class="chips r">${ERR_TYPES.slice(0, 4).map((e) => `<button class="chip${qsess.errPick === e ? ' sel' : ''}" onclick="qPickErr(this,'${e}')">${e}</button>`).join('')}</div><div class="actr" style="margin-top:8px"><button class="btn" onclick="qRedoStart()">📝 看解答重算一次</button><button class="btn" onclick="qSideStart()">🎯 先練一題類題</button><button class="btn primary big" id="errnext" ${qsess.errPick ? '' : 'disabled'} onclick="qFinish(false, ${ms}, qsess.errPick)">下一題 →</button></div>`
       : `<div class="actr"><button class="btn primary big" onclick="qFinish(true, ${ms}, ${overtime ? "'超時'" : 'null'})">下一題 →</button><button class="btn" onclick="qSideStart()">🎯 再練一題類題</button></div>`);
   // ④ 中段（批改的靈魂）：先肯定你做得好的 → 錯在哪（圈在你字上）→ 🧠 卡在哪 → 🎯 下次這樣做。詳解不塞這、收摺疊。
   const willProc = aiKey() && !v && qsess.proc && qsess.proc.n; // 選擇/打字題稍後由 AI 過程點評接手稱讚＋下次，這裡就不重複
@@ -3171,7 +3427,18 @@ function pickSimilar(origQ, doneIds) {
   const top = cands.slice(0, Math.min(5, cands.length));
   return top[Math.floor(Math.random() * top.length)];        // 前幾名裡隨機，避免每次同一題
 }
-let sideState = null; // { html, sess, origQ, doneIds }：支線期間暫存原題解答畫面與 session，回得去
+let sideState = null; // { html, sess, origQ, doneIds, redo? }：支線期間暫存原題解答畫面與 session，回得去
+/* 📝 訂正重算：答錯當下把解答攤開，同一題再手寫走一遍（有 key 照樣 AI 批改）。
+   跟類題共用支線機制：只記 S.sidePractice（帶 redo 旗標），不動 attempts/錯題本。 */
+function qRedoStart() {
+  if (!qsess) return;
+  sideState = { html: app().innerHTML, sess: qsess, origQ: qsess.q, doneIds: [qsess.q.id], redo: true };
+  qRedoAgain();
+}
+function qRedoAgain() {
+  if (!sideState || !sideState.redo) return;
+  renderQuestion(sideState.origQ, { head: '📝 訂正重算（解答攤開著）', side: true, redo: true, origId: sideState.origQ.id, onDone() {} });
+}
 function qSideStart() {
   if (!qsess) return;
   // 類題不可以抽到「本輪待出的題」——否則等等正輪出到同題等於白練＋灌水
@@ -3602,7 +3869,7 @@ function wrongCard(id) {
 }
 /* 📖 單元重點整理（參考書內容匯入後出現；kind:'notes' 內容包） */
 function notesLibCard() {
-  const n = (S.extnotes || []).length;
+  const n = extNotesArr().length;
   if (!n) return '';
   return `<div class="card"><h2>📖 單元重點整理 <span class="dim">${n} 條</span></h2>
     <div class="chips r">${Object.keys(TOPICS).map((k) => `<button class="btn sm" onclick="showNotes('${k}')">${TOPICS[k]}</button>`).join('')}</div>
@@ -3610,7 +3877,7 @@ function notesLibCard() {
 }
 function showNotes(unit) {
   const box = $('#notes-box'); if (!box) return;
-  const ns = (S.extnotes || []).filter((x) => x.topic === unit).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const ns = extNotesArr().filter((x) => x.topic === unit).sort((a, b) => (a.order || 0) - (b.order || 0));
   box.innerHTML = ns.length
     ? `<div class="mlib">${ns.map((x) => `<details><summary>${escH(x.title)}</summary><div>${rtTxt(x.html)}</div></details>`).join('')}</div>`
     : `<p class="dim">「${TOPICS[unit]}」目前沒有匯入的重點。</p>`;
@@ -3887,7 +4154,7 @@ function timerSettingCard() {
 /* 📦 題庫內容管理：外部題包按來源分組，可停用（紀錄保留、重啟即回） */
 function packCard() {
   const packs = {};
-  for (const q of S.extbank || []) {
+  for (const q of extBankArr()) {
     const src = q.src || '（未標來源）';
     const p = (packs[src] = packs[src] || { n: 0, units: new Set(), d: { 1: 0, 2: 0, 3: 0 }, real: !!q.src });
     p.n++; p.units.add(q.topic); p.d[q.diff] = (p.d[q.diff] || 0) + 1;
@@ -3900,7 +4167,8 @@ function packCard() {
     return `<tr><td>${escH(src)}${off ? ' <span class="badc">（停用中）</span>' : ''}</td><td>${p.n} 題</td><td>${p.units.size} 單元</td><td class="dim">易${p.d[1] || 0}/中${p.d[2] || 0}/難${p.d[3] || 0}</td>
       <td>${p.real ? `<button class="btn sm" onclick="togglePack('${jsA(src)}')">${off ? '啟用' : '停用'}</button>` : ''}</td></tr>`;
   }).join('');
-  return `<div class="card"><h2>📦 外部題庫 <span class="dim">共 ${(S.extbank || []).length} 題</span></h2>
+  return `<div class="card"><h2>📦 外部題庫 <span class="dim">共 ${extBankArr().length} 題${splitOn() ? '（已與作答狀態分家）' : ''}</span></h2>
+    ${contentTableMissing ? '<p class="dim fs13">💡 到 Supabase Dashboard 跑一次 schema.sql 的 content_packs 段後，題庫將與作答狀態分家：每次作答不再整包上傳、20+ 本講義也放得下。</p>' : ''}
     <div class="tblwrap"><table class="tbl"><tr><th>來源</th><th>題數</th><th>覆蓋</th><th>難度分布</th><th></th></tr>${rows}</table></div></div>`;
 }
 function togglePack(src) {
@@ -4009,7 +4277,7 @@ function supaInit() {
   supa.auth.onAuthStateChange((ev, session) => {
     const was = syncState.user && syncState.user.id;
     syncState.user = session ? session.user : null;
-    if (syncState.user && syncState.user.id !== was) syncPull();
+    if (syncState.user && syncState.user.id !== was) { syncPull(); probeContent(); }
     syncPill();
   });
   window.addEventListener('online', () => { if (syncState.user) { syncPush(); flushInkQueue(); } });
@@ -4091,7 +4359,8 @@ async function syncPull() {
     if (error) { syncState.msg = '下載失敗：' + error.message; return; }
     if (data && data.data) {
       S = mergeState(S, data.data);
-      localStorage.setItem(KEY, JSON.stringify(S));
+      if (splitOn()) migrateContentFromS(); // 另一台舊裝置 merge 進來的內容 → 搬進內容層、S 保持輕
+      try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { saveQuotaErr = true; }
       applyExtBank();
       syncState.msg = '已從雲端合併';
       updateBadge();
@@ -4297,10 +4566,11 @@ function initMathObserver() {
   mo.observe(el, { childList: true, subtree: true });
   typesetMath();
 }
-function boot() {
+async function boot() {
   const navEl = $('nav');
   navEl.innerHTML = Object.keys(VIEWS).map((v) =>
     `<button data-view="${v}" onclick="nav('${v}')">${VIEWS[v].label}</button>`).join('');
+  await contentInit(); // 分家啟用時從 IndexedDB 載內容（毫秒級；未啟用是 no-op）
   applyExtBank();
   aiKeyMigrate();
   supaInit();
