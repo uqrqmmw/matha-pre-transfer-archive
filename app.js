@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0712e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0712f'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -96,11 +96,13 @@ function contentByKind(kind) {
   }
   return out;
 }
+let _idb = null;
 function idbOpen() {
+  if (_idb) return Promise.resolve(_idb);
   return new Promise((res, rej) => {
     const rq = indexedDB.open('mathA13Content', 1);
     rq.onupgradeneeded = () => rq.result.createObjectStore('packs');
-    rq.onsuccess = () => res(rq.result);
+    rq.onsuccess = () => { _idb = rq.result; res(_idb); }; // 快取單一連線：反覆 open 不關會累積連線、可能互相 block
     rq.onerror = () => rej(rq.error);
   });
 }
@@ -129,10 +131,26 @@ async function contentInit() {
   try { CONTENT.packs = JSON.parse(localStorage.getItem(CONTENT_LS) || '{}'); } catch (e) { CONTENT.packs = {}; }
 }
 function persistContent() {
-  idbWriteAll(CONTENT.packs).catch(() => {
+  // 回傳 promise：匯入/停用後要「等寫完再 reload」，否則 IDB 交易還沒 commit 就重載＝內容遺失
+  return idbWriteAll(CONTENT.packs).catch(() => {
     try { localStorage.setItem(CONTENT_LS, JSON.stringify(CONTENT.packs)); }
     catch (e) { saveQuotaErr = true; try { syncPill(); } catch (_) {} }
   });
+}
+/* 等內容確實寫入本機後再重載：寫入 → 讀回驗證 → 才 reload（IDB 非同步，reload 不能搶在 commit 前）。
+   驗證失敗就再試一次；仍失敗也照樣 reload（頂多重匯入一次），不卡住使用者。 */
+async function reloadAfterContent() {
+  const want = Object.keys(CONTENT.packs).reduce((n, k) => n + ((CONTENT.packs[k].items || []).length), 0);
+  for (let tries = 0; tries < 2; tries++) {
+    await persistContent();
+    try {
+      const back = await idbReadAll();
+      const got = Object.keys(back).reduce((n, k) => n + ((back[k].items || []).length), 0);
+      if (got >= want) break;
+    } catch (e) { break; }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  location.reload();
 }
 /* 匯入/遷移共用：把 items 併進（或建立）一個 pack；unionById.last 供回報 */
 function upsertPack(pid, kind, name, items) {
@@ -222,12 +240,11 @@ function importQPack(items, name) {
   if (!good.length) { alert(`這包題目全部沒過驗證，未匯入。\n${bad.slice(0, 10).join('\n')}${bad.length > 10 ? `\n…共 ${bad.length} 題` : ''}`); return; }
   if (!confirm(`題包${name ? '「' + name + '」' : ''}：${good.length} 題通過驗證${bad.length ? `、${bad.length} 題有問題被擋下` : ''}。併入後刷題與模擬會自動納入，確定？`)) return;
   let st;
+  let splitPid = null;
   if (splitOn()) { // 內容層：進 pack、不進 S（作答同步不再揹著題庫跑）
-    const pid = 'imp-' + strHash(name || 'qpack');
-    upsertPack(pid, 'qpack', name || '匯入題包', good);
+    splitPid = 'imp-' + strHash(name || 'qpack');
+    upsertPack(splitPid, 'qpack', name || '匯入題包', good);
     st = unionById.last || {};
-    persistContent();
-    pushPack(pid);
   } else {
     S.extbank = unionById(good, S.extbank);
     st = unionById.last || {};
@@ -235,7 +252,7 @@ function importQPack(items, name) {
   }
   if (bad.length) console.table(bad);
   alert(`完成：新增 ${st.added || 0} 題、更新 ${st.updated || 0} 題、略過 ${st.skipped || 0} 題（版本相同）。外部題庫共 ${extBankArr().length} 題。${bad.length ? `\n\n被擋下 ${bad.length} 題：\n${bad.slice(0, 5).join('\n')}${bad.length > 5 ? `\n…其餘見主控台` : ''}` : ''}`);
-  location.reload();
+  if (splitPid) { pushPack(splitPid); reloadAfterContent(); } else location.reload(); // 等 IDB 寫完再 reload
 }
 function importData(input) {
   const f = input.files[0]; if (!f) return;
@@ -252,20 +269,18 @@ function importData(input) {
           const ok = d.items.filter((x) => isF ? (x && x.id && x.front && x.back && TOPICS[x.unit]) : (x && x.id && TOPICS[x.topic] && x.title && x.html));
           if (!ok.length) { alert(isF ? '這包公式卡格式不對（每張需 id/unit/front/back）。' : '這包重點整理格式不對（每條需 id/topic/title/html）。'); return; }
           if (!confirm(`${isF ? '公式卡包' : '重點整理包'}${d.name ? '「' + d.name + '」' : ''}：${ok.length} ${isF ? '張' : '條'}。確定匯入？`)) return;
-          let st;
+          let st, spid = null;
           if (splitOn()) {
-            const pid = 'imp-' + strHash((d.name || d.kind) + ':' + d.kind);
-            upsertPack(pid, d.kind, d.name || (isF ? '匯入公式卡' : '匯入重點'), ok);
+            spid = 'imp-' + strHash((d.name || d.kind) + ':' + d.kind);
+            upsertPack(spid, d.kind, d.name || (isF ? '匯入公式卡' : '匯入重點'), ok);
             st = unionById.last || {};
-            persistContent();
-            pushPack(pid);
           } else {
             if (isF) S.extflash = unionById(ok, S.extflash); else S.extnotes = unionById(ok, S.extnotes);
             st = unionById.last || {};
             if (!save()) { alert('本機儲存空間已滿，這包沒有存下來。'); return; }
           }
           alert(`完成：新增 ${st.added || 0}、更新 ${st.updated || 0} ${isF ? '張' : '條重點'}。`);
-          location.reload();
+          if (spid) { pushPack(spid); reloadAfterContent(); } else location.reload();
           return;
         }
         alert(`不認得的內容包 kind：「${d.kind}」（支援 qpack / flash / notes）。`);
