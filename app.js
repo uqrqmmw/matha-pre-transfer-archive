@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713z'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0714a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -296,15 +296,35 @@ async function pullContent() {
     if (changed) { persistContent(); applyExtBank(); updateBadge(); }
   } catch (e) {}
 }
+/* 超出「學測數A」範圍的題目過濾（依教育部108數學領綱 + 大考中心命題範圍實查裁定）。
+   只在此攔匯入題(含使用者另外匯入的 115數B/講義)，故已匯入雲端的舊題下次載入即自動剔除、不必重匯。
+   ⚠️ 只鎖「明確、無歧義」的超範圍，避免誤殺同名的範圍內內容：
+   - cot/sec/csc「直接入題」：領綱 F-11A-1 標 ※＝「建議不納入全國性考試」→ 學測只考 sin/cos/tan。
+     只比對題幹(q)不比對詳解——詳解裡把 1+tan²=sec² 當中間恆等式的在範圍題(如 trig p85)要留著。
+   - 十分逼近法「具名法」：屬國中 N-8-2；高一 N-10-1 只承接「無理數十進制估算」概念，學測不會用這名字命題。
+   刻意不鎖的(領綱查證為範圍內，別加)：循環小數化分數(高一代數可解)、敘述統計變異數/標準差、
+   古典機率期望值、條件機率/貝氏、排列組合/二項式展開、直線參數式、兩圓為配圖的正餘弦定理題。 */
+const OUT_OF_RANGE_RE = [
+  /\\(?:cot|sec|csc)\b/,   // 直接考餘切/正割/餘割（LaTeX 命令）＝ ※ 排除
+  /(?:餘切|正割|餘割)\s*函數/, // 中文寫法（保守：要接「函數」才算，避免誤傷）
+  /十分逼近法/,            // 國中具名法
+];
+function outOfRange(q) {
+  const stem = String((q && q.q) || '');
+  return OUT_OF_RANGE_RE.some((re) => re.test(stem));
+}
+let outRangeSkipped = 0; // 供 UI/回報顯示這輪濾掉幾題
 function applyExtBank() {
   BANK.length = BUILTIN_N; // 冪等重建：內容更新（rev 覆蓋/停用切換/雲端拉回）直接重灌外部段
   const ext = extBankArr();
   const have = new Set(BANK.map((q) => q.id));
+  outRangeSkipped = 0;
   for (const q of ext) {
     if (!q || !q.id || have.has(q.id)) continue;
     if (q.needsFigure && !q.fig) continue; // 需要圖才能解、圖還沒補上的題不出（避免無圖硬解）
     if (q.dup) continue; // 內容重複題（講義收錄的歷屆題等）：只出正主，不出分身
     if (q.src && packIsOff(q.src)) continue; // 使用者停用的內容包
+    if (outOfRange(q)) { outRangeSkipped++; continue; } // 超出學測數A範圍（cot/sec/csc、十分逼近法…）
     if (validateQ(q)) continue; // 壞題（雲端舊資料也可能有）擋在庫外，避免炸 render
     BANK.push(q); have.add(q.id);
   }
